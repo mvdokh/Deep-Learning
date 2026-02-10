@@ -1,0 +1,6 @@
+Model,Total Parameters,Total Neurons,Stages,Input Resolution,Final Channels
+ConvNeXt-Tiny,"44,615,857","564,480",4,224x224,768
+ConvNeXt-Small,"66,250,417","564,480",4,224x224,768
+ConvNeXt-Base,"109,953,489","752,640",4,224x224,1024
+ConvNeXt-Large,"229,799,953","1,128,960",4,224x224,1536
+ConvNeXt-XLarge,"392,900,177","1,505,280",4,224x224,2048
