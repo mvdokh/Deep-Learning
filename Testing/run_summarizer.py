@@ -27,7 +27,7 @@ import sys
 import time
 from pathlib import Path
 
-from summarizer import BookSummarizer, SummarizerConfig, print_summary
+from summarizer import BookSummarizer, SummarizerConfig
 
 
 DEFAULT_PDF = (
@@ -82,10 +82,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Min tokens per chunk summary (default: 56).",
     )
     parser.add_argument(
-        "--output", "-o",
+        "--output-dir", "-o",
         type=Path,
         default=None,
-        help="Optional path to write the final summary text to a file.",
+        help="Directory to save depth-level and final summary files. "
+             "If omitted, a timestamped folder is created next to the PDF.",
     )
 
     return parser.parse_args(argv)
@@ -109,15 +110,11 @@ def main(argv: list[str] | None = None) -> None:
     summarizer = BookSummarizer(config)
 
     t0 = time.perf_counter()
-    summary = summarizer.summarize_pdf(args.pdf)
+    summary = summarizer.summarize_pdf(args.pdf, output_dir=args.output_dir)
     elapsed = time.perf_counter() - t0
 
-    print_summary(summary)
-    print(f"  [Finished in {elapsed:.1f}s]\n")
-
-    if args.output:
-        args.output.write_text(summary, encoding="utf-8")
-        print(f"  Summary saved to '{args.output}'")
+    print(f"\n  [Finished in {elapsed:.1f}s]")
+    print(f"  All output files are in the summary directory.\n")
 
 
 if __name__ == "__main__":

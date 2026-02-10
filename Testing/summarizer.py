@@ -22,6 +22,7 @@ from __future__ import annotations
 import math
 import textwrap
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
@@ -120,20 +121,57 @@ class BookSummarizer:
 
     # ---- public API -------------------------------------------------------
 
-    def summarize_pdf(self, pdf_path: str | Path) -> str:
-        """End-to-end: PDF path in → summary string out."""
+    def summarize_pdf(
+        self,
+        pdf_path: str | Path,
+        output_dir: str | Path | None = None,
+    ) -> str:
+        """End-to-end: PDF path in → summary string out.
+
+        If *output_dir* is provided, intermediate and final summaries are
+        written to numbered text files inside that directory.
+        """
         print(f"\n[BookSummarizer] Extracting text from '{pdf_path}' …")
         raw_text = extract_text_from_pdf(pdf_path)
         print(f"[BookSummarizer] Extracted {len(raw_text):,} characters.")
-        return self.summarize_text(raw_text)
 
-    def summarize_text(self, text: str) -> str:
+        # Resolve output directory
+        out = self._prepare_output_dir(output_dir, pdf_path)
+        return self.summarize_text(raw_text, output_dir=out)
+
+    def summarize_text(
+        self,
+        text: str,
+        output_dir: Path | None = None,
+    ) -> str:
         """Hierarchically summarize an arbitrarily long text string."""
-        return self._hierarchical_summarize(text, depth=0)
+        return self._hierarchical_summarize(text, depth=0, output_dir=output_dir)
 
     # ---- internals --------------------------------------------------------
 
-    def _hierarchical_summarize(self, text: str, depth: int) -> str:
+    @staticmethod
+    def _prepare_output_dir(
+        output_dir: str | Path | None,
+        pdf_path: str | Path,
+    ) -> Path:
+        """Create (or default) the output directory for this run."""
+        if output_dir is not None:
+            out = Path(output_dir)
+        else:
+            stem = Path(pdf_path).stem
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            out = Path(pdf_path).parent / f"summary_{stem}_{timestamp}"
+
+        out.mkdir(parents=True, exist_ok=True)
+        print(f"[BookSummarizer] Output directory: {out}")
+        return out
+
+    def _hierarchical_summarize(
+        self,
+        text: str,
+        depth: int,
+        output_dir: Path | None = None,
+    ) -> str:
         """Recursively chunk → summarize → concatenate until short enough."""
         tokens = self.tokenizer.encode(text, add_special_tokens=False)
         n_tokens = len(tokens)
@@ -146,7 +184,12 @@ class BookSummarizer:
         # Base case: text fits in a single model pass
         if n_tokens <= self.cfg.max_input_tokens:
             print(f"{indent}[depth {depth}] Summarising in a single pass …")
-            return self._summarize_chunk(text)
+            final_summary = self._summarize_chunk(text)
+
+            if output_dir is not None:
+                self._write_final_summary(output_dir, depth, final_summary)
+
+            return final_summary
 
         if depth >= self.cfg.max_recursion_depth:
             print(
@@ -156,7 +199,12 @@ class BookSummarizer:
             truncated = self.tokenizer.decode(
                 tokens[: self.cfg.max_input_tokens], skip_special_tokens=True
             )
-            return self._summarize_chunk(truncated)
+            final_summary = self._summarize_chunk(truncated)
+
+            if output_dir is not None:
+                self._write_final_summary(output_dir, depth, final_summary)
+
+            return final_summary
 
         # Recursive case: split into chunks, summarize each, then combine
         chunks = self._split_into_chunks(tokens)
@@ -175,13 +223,68 @@ class BookSummarizer:
             summaries.append(summary)
 
         combined = " ".join(summaries)
+        combined_tokens = len(
+            self.tokenizer.encode(combined, add_special_tokens=False)
+        )
         print(
             f"{indent}[depth {depth}] Combined summaries: "
-            f"{len(self.tokenizer.encode(combined, add_special_tokens=False)):,} tokens"
+            f"{combined_tokens:,} tokens"
         )
 
+        # ---- write this depth's chunk summaries to a file ----
+        if output_dir is not None:
+            self._write_depth_file(output_dir, depth, chunks, summaries)
+
         # Recurse on the combined summaries
-        return self._hierarchical_summarize(combined, depth + 1)
+        return self._hierarchical_summarize(
+            combined, depth + 1, output_dir=output_dir
+        )
+
+    # ---- file-writing helpers ---------------------------------------------
+
+    @staticmethod
+    def _write_depth_file(
+        output_dir: Path,
+        depth: int,
+        chunks: list[list[int]],
+        summaries: list[str],
+    ) -> None:
+        """Write all chunk summaries for a given depth to a text file."""
+        path = output_dir / f"depth_{depth}_summaries.txt"
+        sep = "-" * 72
+
+        lines: list[str] = []
+        lines.append(f"{'=' * 72}")
+        lines.append(f"  DEPTH {depth}  —  {len(summaries)} chunk(s) summarised")
+        lines.append(f"{'=' * 72}\n")
+
+        for i, summary in enumerate(summaries):
+            lines.append(f"--- Chunk {i + 1}/{len(summaries)} "
+                         f"({len(chunks[i])} input tokens) ---")
+            lines.append(summary)
+            lines.append("")  # blank line between chunks
+
+        path.write_text("\n".join(lines), encoding="utf-8")
+        print(f"    -> Saved depth {depth} summaries to '{path}'")
+
+    @staticmethod
+    def _write_final_summary(
+        output_dir: Path,
+        depth: int,
+        summary: str,
+    ) -> None:
+        """Write the final (single-pass) summary to its own file."""
+        path = output_dir / "final_summary.txt"
+
+        lines: list[str] = []
+        lines.append(f"{'=' * 72}")
+        lines.append(f"  FINAL SUMMARY  (produced at depth {depth})")
+        lines.append(f"{'=' * 72}\n")
+        lines.append(summary)
+        lines.append("")
+
+        path.write_text("\n".join(lines), encoding="utf-8")
+        print(f"    -> Saved final summary to '{path}'")
 
     def _split_into_chunks(self, token_ids: list[int]) -> list[list[int]]:
         """Split a token-id list into overlapping windows."""
