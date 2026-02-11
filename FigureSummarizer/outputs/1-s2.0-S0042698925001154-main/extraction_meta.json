@@ -1,0 +1,97 @@
+{
+  "pdf_path": "/Users/martindokholyan/Desktop/Spring 26/Readings/papers/1-s2.0-S0042698925001154-main.pdf",
+  "pdf_name": "1-s2.0-S0042698925001154-main.pdf",
+  "num_pages": 9,
+  "figures": [
+    {
+      "figure_id": "fig_1",
+      "page_number": 0,
+      "image_path": "/Users/martindokholyan/Desktop/PyTorch/FigureSummarizer/outputs/1-s2.0-S0042698925001154-main/fig_1.png",
+      "caption": "",
+      "bbox": [
+        36.793701171875,
+        61.965087890625,
+        96.37800598144531,
+        127.1619873046875
+      ],
+      "width": 248,
+      "height": 271,
+      "source_pdf": "1-s2.0-S0042698925001154-main.pdf"
+    },
+    {
+      "figure_id": "fig_2",
+      "page_number": 0,
+      "image_path": "/Users/martindokholyan/Desktop/PyTorch/FigureSummarizer/outputs/1-s2.0-S0042698925001154-main/fig_2.png",
+      "caption": "",
+      "bbox": [
+        501.052001953125,
+        55.44550323486328,
+        557.744873046875,
+        126.99200439453125
+      ],
+      "width": 236,
+      "height": 298,
+      "source_pdf": "1-s2.0-S0042698925001154-main.pdf"
+    },
+    {
+      "figure_id": "fig_3",
+      "page_number": 1,
+      "image_path": "/Users/martindokholyan/Desktop/PyTorch/FigureSummarizer/outputs/1-s2.0-S0042698925001154-main/fig_3.png",
+      "caption": "Fig. 1. Retinal receptive fields increase in complexity throughout the retinal circuit. A) A schematic of the neuronal cell classes in the retina. While photo­ receptors and bipolar cells have relatively simple receptive fields, amacrine cells and ganglion cells have more complex receptive fields. OPL = outer plexiform layer, ONL = outer nuclear layer, IPL = inner plexiform layer, and GCL = ganglion cell layer. B) Examples of receptive field features in the retina. Spatial receptive fields are often characterized by antagonistic center (‘c’) vs. surround (‘s’) components. Cells may prefer “On”—increments of light (white)—or “Off”—decrements of light (dark gray)—in their receptive field centers. C) Receptive fields include temporal filters, which may be mono-, bi-, or multi-phasic. D) Center and surround regions may have chromatic selectivity, including color opponency (purple vs. green), or be achromatic, equally preferring multiple colors. E) Receptive fields may be complex or nonlinear. Some examples include direction and orientation selectivity, in which firing rate (red line) depends on the direction or orientation of moving stimuli. Suppressed by contrast cells fire when there is no change in luminance and stop firing when stimulus luminance (stim.) changes, regardless of the polarity of the change. In addition, some cell types change their receptive field structure, including switching from “On” to “Off” depending on the overall lighting conditions (i. e. dim vs. bright). (For interpretation of the references to color in this figure legend, the reader is referred to the web version of this article.) 2",
+      "bbox": [
+        70.07240295410156,
+        387.77301025390625,
+        525.2094116210938,
+        640.177001953125
+      ],
+      "width": 1896,
+      "height": 1052,
+      "source_pdf": "1-s2.0-S0042698925001154-main.pdf"
+    },
+    {
+      "figure_id": "fig_4",
+      "page_number": 2,
+      "image_path": "/Users/martindokholyan/Desktop/PyTorch/FigureSummarizer/outputs/1-s2.0-S0042698925001154-main/fig_4.png",
+      "caption": "Fig. 2. Bipolar cell receptive fields are diverse in their processing of spatial and temporal visual information. A) Cartoon of On and Off bipolar cells, showing axons stratifying in distinct sublayers of the inner plexiform layer (IPL). B) Schematic (left) and examples (right) of spatiotemporal receptive fields of On and Off bipolar cells demonstrating differences in spatial and temporal properties. Adapted from (Strauss et al., 2022). C) Model simulation demonstrating activity of bipolar cells in response to a motion stimulus emerging from behind an occlusion. The simulation compared bipolar cells with antagonistic center-surround receptive fields and “center only” receptive fields. Inclusion of the surround improved bipolar cell activation near the spatial location where the novel moving object emerged. Adapted from (Gaynes et al., 2022). D) Measurements of On bipolar cell transience and surround strength. The results demonstrate that an outer set of bipolar cell types has varied temporal properties, while the inner set has varied spatial properties. Adapted from (Hsiang et al., 2024). E) Recordings of glutamate release from bipolar cells synapsing onto different sites on the starburst amacrine cell dendrite. More sustained glutamate release is observed at dendritic sites near the soma and more transient glutamate release is observed at dendrites distal to the soma. This arrangement helps the starburst amacrine cell compute the direction of image motion. Adapted from (Srivastava et al., 2022). 3",
+      "bbox": [
+        42.122798919677734,
+        459.60101318359375,
+        553.1787719726562,
+        640.177001953125
+      ],
+      "width": 2129,
+      "height": 752,
+      "source_pdf": "1-s2.0-S0042698925001154-main.pdf"
+    },
+    {
+      "figure_id": "fig_5",
+      "page_number": 4,
+      "image_path": "/Users/martindokholyan/Desktop/PyTorch/FigureSummarizer/outputs/1-s2.0-S0042698925001154-main/fig_5.png",
+      "caption": "",
+      "bbox": [
+        59.47090148925781,
+        55.38995361328125,
+        266.8309020996094,
+        679.91796875
+      ],
+      "width": 864,
+      "height": 2602,
+      "source_pdf": "1-s2.0-S0042698925001154-main.pdf"
+    },
+    {
+      "figure_id": "fig_6",
+      "page_number": 6,
+      "image_path": "/Users/martindokholyan/Desktop/PyTorch/FigureSummarizer/outputs/1-s2.0-S0042698925001154-main/fig_6.png",
+      "caption": "Fig. 4. Neuromodulators alter retinal receptive fields. Neuromodulator-releasing neurons are schematized in the retina. Amacrine cells that release dopamine or nitric oxide alter specific features of receptive fields (RFs). Dopamine modulates surround strength and surround spatial extent via dopaminergic amacrine cells (green) projecting in to the outer edge of the inner plexiform layer (IPL) (Warwick et al., 2023). Meanwhile, nitric oxide does not alter spatial receptive fields, but does affect temporal and contrast tuning through NO release from a single type of displaced, wide-field amacrine cell (blue) (Jacoby et al., 2018; Gonschorek et al., 2025). Histaminergic neurons projecting into the retina from the tuberomammillary nucleus of the hypothalamus (axons in orange) alter ganglion cell surround strength and firing rate (Warwick et al., 2024). GCL = ganglion cell layer. INL = inner nuclear layer. B = bipolar cell, G = ganglion cell, H = horizontal cell. (For interpretation of the references to color in this figure legend, the reader is referred to the web version of this article.) 2025). field maps in the retina is within reach.",
+      "bbox": [
+        127.16200256347656,
+        55.4219970703125,
+        468.15399169921875,
+        159.53399658203125
+      ],
+      "width": 1421,
+      "height": 434,
+      "source_pdf": "1-s2.0-S0042698925001154-main.pdf"
+    }
+  ]
+}
