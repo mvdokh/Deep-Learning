@@ -21,6 +21,8 @@ CarRecognition/
 ├── car_classes.json    # (auto-generated) full car class list from NHTSA API
 ├── tools/
 │   └── fetch_car_classes.py  # Fetches makes/models/years from NHTSA API
+├── ClassGUI/
+│   └── app.py                # Tkinter GUI for rapid manual image classification
 ├── data/
 │   ├── raw/            # Downloaded images organised by class label
 │   └── processed/      # train / val / test splits (ImageFolder layout)
@@ -129,7 +131,26 @@ Image: my_car.jpg
   3. Mercedes C-Class 2023               3.1%
 ```
 
-### 6. Use as a Python library
+### 6. Manually classify images with the GUI
+
+Launch the ClassGUI to rapidly label a folder of car images by hand:
+
+```bash
+python ClassGUI/app.py
+```
+
+- **Select Image Folder** — pick a folder of car photos
+- **Search & Dropdown** — type to filter classes, pick from the dropdown
+- **Enter** — classify and advance to the next image
+- **Arrow keys** — navigate images, **S** to skip, **Ctrl/Cmd+Z** to undo
+- Choose between **copy** or **move** mode
+- Optionally set a separate output folder
+
+The classes in the dropdown are loaded from `car_classes.json` (or the
+inline fallback in `config.py`). Hit **Reload Classes** after running
+`fetch_car_classes.py` to refresh the list without restarting.
+
+### 7. Use as a Python library
 
 ```python
 from predict import CarPredictor
