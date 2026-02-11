@@ -18,6 +18,9 @@ CarRecognition/
 ├── train.py            # Full training loop with TensorBoard, early stopping
 ├── predict.py          # CLI & Python API for single-image inference
 ├── requirements.txt    # Python dependencies
+├── car_classes.json    # (auto-generated) full car class list from NHTSA API
+├── tools/
+│   └── fetch_car_classes.py  # Fetches makes/models/years from NHTSA API
 ├── data/
 │   ├── raw/            # Downloaded images organised by class label
 │   └── processed/      # train / val / test splits (ImageFolder layout)
@@ -36,18 +39,35 @@ cd CarRecognition
 pip install -r requirements.txt
 ```
 
-### 2. Configure car classes
+### 2. Fetch car classes from the NHTSA API
 
-Open `config.py` and edit `CAR_CLASSES` to match the exact makes, models, and
-years you want the model to recognise:
+Instead of manually listing cars, run the fetch tool to pull every
+make/model/year from the US government's NHTSA database (free, no API key):
 
-```python
-CAR_CLASSES = [
-    {"label": "Toyota Camry 2020", "make": "Toyota", "model": "Camry", "year": "2020"},
-    {"label": "Honda Civic 2021",  "make": "Honda",  "model": "Civic", "year": "2021"},
-    # ... add as many as you like
-]
+```bash
+# Fetch popular makes, years 2018-2025 (writes car_classes.json)
+python tools/fetch_car_classes.py
+
+# Custom year range
+python tools/fetch_car_classes.py --years 2020 2025
+
+# Only specific makes
+python tools/fetch_car_classes.py --makes Toyota Honda BMW
+
+# Fetch ALL makes (warning: huge list, slow)
+python tools/fetch_car_classes.py --all-makes --years 2023 2024
+
+# Filter to passenger cars only (no trucks/SUVs)
+python tools/fetch_car_classes.py --car-type passenger
+
+# Preview without writing anything
+python tools/fetch_car_classes.py --dry-run
 ```
+
+This generates `car_classes.json` (or writes directly into `config.py`).
+`config.py` auto-loads from `car_classes.json` if it exists.
+
+You can also manually edit `CAR_CLASSES` in `config.py` if you prefer.
 
 ### 3. Download images
 
