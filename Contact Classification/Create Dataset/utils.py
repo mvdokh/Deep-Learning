@@ -168,6 +168,251 @@ def split_dataset(
     return _pack(X_idx_train), _pack(X_idx_test)
 
 
+# ──────────────────────── Multi‑experiment utilities ─────────────────────────
+
+def build_full_dataset_from_root(
+    root_dir: str,
+    resize: Tuple[int, int] | None = None,
+    contact_csv_name: str = "contact_agnostic",
+    no_contact_csv_name: str = "no_contact",
+    video_extensions: Tuple[str, ...] = (".mp4", ".avi", ".mov", ".mkv"),
+) -> dict:
+    """
+    Aggregate frames + labels from multiple experiment folders into one dataset.
+
+    Expected layout under *root_dir*::
+
+        root_dir/
+            102725_1/
+                contact_agnostic.csv
+                no_contact.csv
+                <video>.mp4
+            102625_1/
+                contact_agnostic.csv
+                no_contact.csv
+                <video>.mp4
+            ...
+
+    Parameters
+    ----------
+    root_dir : str
+        Directory containing per‑experiment subfolders.
+    resize : tuple (width, height), optional
+        Passed to ``extract_frames``.
+    contact_csv_name : str
+        Base name (without extension) of the contact CSV.
+    no_contact_csv_name : str
+        Base name (without extension) of the no‑contact CSV.
+    video_extensions : tuple of str
+        Video file extensions to look for.
+
+    Returns
+    -------
+    data : dict
+        {"frames": np.ndarray, "labels": np.ndarray, "frame_numbers": np.ndarray}
+        ready to be saved as a pickle file and consumed by ``ContactDataset``.
+    """
+    root = Path(root_dir)
+    if not root.exists():
+        raise FileNotFoundError(f"Root dataset directory does not exist: {root_dir}")
+
+    all_frames: list[np.ndarray] = []
+    all_labels: list[int] = []
+    all_frame_numbers: list[int] = []
+
+    exp_dirs = sorted([p for p in root.iterdir() if p.is_dir()])
+    if not exp_dirs:
+        raise RuntimeError(f"No experiment subfolders found under: {root_dir}")
+
+    print(f"Found {len(exp_dirs)} experiment folders under {root_dir}")
+
+    for exp_dir in exp_dirs:
+        # Locate CSVs
+        contact_csv_candidates = list(exp_dir.glob(f"{contact_csv_name}*.csv"))
+        no_contact_csv_candidates = list(exp_dir.glob(f"{no_contact_csv_name}*.csv"))
+
+        if not contact_csv_candidates or not no_contact_csv_candidates:
+            print(f"⚠  Missing CSVs in {exp_dir.name} — skipping this folder.")
+            continue
+
+        contact_csv = str(contact_csv_candidates[0])
+        no_contact_csv = str(no_contact_csv_candidates[0])
+
+        # Locate video
+        video_files = [
+            p for p in exp_dir.iterdir()
+            if p.is_file() and p.suffix.lower() in video_extensions
+        ]
+        if not video_files:
+            print(f"⚠  No video file with extensions {video_extensions} in {exp_dir.name} — skipping.")
+            continue
+
+        video_path = str(sorted(video_files)[0])
+
+        print(f"\n▶ Processing experiment: {exp_dir.name}")
+        print(f"   Video      : {Path(video_path).name}")
+        print(f"   Contact CSV: {Path(contact_csv).name}")
+        print(f"   No‑contact : {Path(no_contact_csv).name}")
+
+        # Build labels and extract frames for this experiment
+        label_df = build_label_dataframe(contact_csv, no_contact_csv)
+        frame_numbers = label_df["frame"].values.astype(int)
+
+        images = extract_frames(video_path, frame_numbers, resize=resize)
+        if not images:
+            print(f"⚠  No frames extracted for {exp_dir.name} — skipping.")
+            continue
+
+        # Some requested frames may be missing (beyond video length etc.),
+        # so we only keep the intersection between label_df and images.keys().
+        available_frames = sorted(set(label_df["frame"]).intersection(images.keys()))
+        if not available_frames:
+            print(f"⚠  No overlapping frames for {exp_dir.name} — skipping.")
+            continue
+
+        label_map = dict(zip(label_df["frame"].values, label_df["label"].values))
+
+        for f in available_frames:
+            all_frames.append(images[f])
+            all_labels.append(int(label_map[f]))
+            all_frame_numbers.append(int(f))
+
+        print(f"   Collected {len(available_frames):,} frames from {exp_dir.name}")
+
+    if not all_frames:
+        raise RuntimeError("No frames collected from any experiment. "
+                           "Check directory structure and CSV/video names.")
+
+    frames_arr = np.stack(all_frames)
+    labels_arr = np.asarray(all_labels, dtype=np.int64)
+    frame_nums_arr = np.asarray(all_frame_numbers, dtype=np.int64)
+
+    print(f"\n✅ Final aggregated dataset: {len(labels_arr):,} frames")
+
+    return {
+        "frames": frames_arr,
+        "labels": labels_arr,
+        "frame_numbers": frame_nums_arr,
+    }
+
+
+def build_datasets_per_experiment(
+    root_dir: str,
+    resize: Tuple[int, int] | None = None,
+    contact_csv_name: str = "contact_agnostic",
+    no_contact_csv_name: str = "no_contact",
+    video_extensions: Tuple[str, ...] = (".mp4", ".avi", ".mov", ".mkv"),
+    output_name: str = "contact_dataset.pkl",
+) -> dict[str, dict]:
+    """
+    Build and save one pickle *per experiment folder* under *root_dir*.
+
+    For each experiment directory, this will:
+        1. Find ``contact_agnostic*.csv`` and ``no_contact*.csv`` (configurable).
+        2. Find a video file with one of *video_extensions*.
+        3. Build labels via ``build_label_dataframe``.
+        4. Extract the annotated frames via ``extract_frames`` (with optional resize).
+        5. Pack into a dict compatible with ``ContactDataset`` and save as
+           ``<exp_dir>/<output_name>``.
+
+    Returns
+    -------
+    summary : dict
+        Mapping ``exp_name -> {\"path\", \"n_frames\", \"n_pos\", \"n_neg\"}``.
+    """
+    root = Path(root_dir)
+    if not root.exists():
+        raise FileNotFoundError(f"Root dataset directory does not exist: {root_dir}")
+
+    exp_dirs = sorted([p for p in root.iterdir() if p.is_dir()])
+    if not exp_dirs:
+        raise RuntimeError(f"No experiment subfolders found under: {root_dir}")
+
+    print(f"Found {len(exp_dirs)} experiment folders under {root_dir}")
+
+    summary: dict[str, dict] = {}
+
+    for exp_dir in exp_dirs:
+        # Locate CSVs
+        contact_csv_candidates = list(exp_dir.glob(f"{contact_csv_name}*.csv"))
+        no_contact_csv_candidates = list(exp_dir.glob(f"{no_contact_csv_name}*.csv"))
+
+        if not contact_csv_candidates or not no_contact_csv_candidates:
+            print(f"⚠  Missing CSVs in {exp_dir.name} — skipping this folder.")
+            continue
+
+        contact_csv = str(contact_csv_candidates[0])
+        no_contact_csv = str(no_contact_csv_candidates[0])
+
+        # Locate video
+        video_files = [
+            p for p in exp_dir.iterdir()
+            if p.is_file() and p.suffix.lower() in video_extensions
+        ]
+        if not video_files:
+            print(f"⚠  No video file with extensions {video_extensions} in {exp_dir.name} — skipping.")
+            continue
+
+        video_path = str(sorted(video_files)[0])
+
+        print(f"\n▶ Processing experiment: {exp_dir.name}")
+        print(f"   Video      : {Path(video_path).name}")
+        print(f"   Contact CSV: {Path(contact_csv).name}")
+        print(f"   No‑contact : {Path(no_contact_csv).name}")
+
+        # Build labels and extract frames for this experiment
+        label_df = build_label_dataframe(contact_csv, no_contact_csv)
+        frame_numbers = label_df["frame"].values.astype(int)
+
+        images = extract_frames(video_path, frame_numbers, resize=resize)
+        if not images:
+            print(f"⚠  No frames extracted for {exp_dir.name} — skipping.")
+            continue
+
+        available_frames = sorted(set(label_df["frame"]).intersection(images.keys()))
+        if not available_frames:
+            print(f"⚠  No overlapping frames for {exp_dir.name} — skipping.")
+            continue
+
+        label_map = dict(zip(label_df["frame"].values, label_df["label"].values))
+
+        frames = np.stack([images[f] for f in available_frames])
+        labels = np.asarray([int(label_map[f]) for f in available_frames], dtype=np.int64)
+        frame_nums = np.asarray(available_frames, dtype=np.int64)
+
+        data = {
+            "frames": frames,
+            "labels": labels,
+            "frame_numbers": frame_nums,
+        }
+
+        out_path = exp_dir / output_name
+        save_pkl(data, str(out_path))
+
+        n_pos = int((labels == 1).sum())
+        n_neg = int((labels == 0).sum())
+
+        summary[exp_dir.name] = {
+            "path": str(out_path),
+            "n_frames": int(len(labels)),
+            "n_pos": n_pos,
+            "n_neg": n_neg,
+        }
+
+        print(
+            f"   → {out_path.name}: {len(labels):,} frames "
+            f"(contact: {n_pos:,}, no-contact: {n_neg:,})"
+        )
+
+    if not summary:
+        raise RuntimeError(
+            "No datasets were created. Check directory structure and CSV/video names."
+        )
+
+    print(f"\n✅ Created pickles for {len(summary)} experiments.")
+    return summary
+
+
 # ──────────────────────────── Pickle I/O ─────────────────────────────────────
 
 def save_pkl(data: dict, path: str) -> None:
