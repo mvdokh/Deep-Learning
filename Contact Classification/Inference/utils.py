@@ -94,6 +94,15 @@ class VideoFrameDataset(Dataset):
     ):
         self.video_path = video_path
         self.transform = transform
+        # Lazily opened cv2.VideoCapture handle (per worker process).
+        # Each DataLoader worker will get its own dataset copy and thus
+        # its own VideoCapture instance. This avoids reopening the video
+        # file on every __getitem__ call, which is very slow.
+        self._cap = None
+        # Track last frame index read for this dataset instance so that when
+        # the DataLoader is iterating sequentially (shuffle=False) we can just
+        # call cap.read() without an expensive cap.set(...) seek on every item.
+        self._last_frame_idx = None
 
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
@@ -107,16 +116,36 @@ class VideoFrameDataset(Dataset):
         print(f"VideoFrameDataset: frames {self.start_frame}–{self.end_frame - 1} "
               f"({len(self.frame_indices):,} frames)")
 
+    def _get_capture(self) -> cv2.VideoCapture:
+        """
+        Return an open VideoCapture for this dataset instance.
+
+        In a multi-worker DataLoader, each worker process has its own copy
+        of the dataset, so each will lazily open its own VideoCapture once.
+        """
+        if self._cap is None:
+            cap = cv2.VideoCapture(self.video_path)
+            if not cap.isOpened():
+                raise RuntimeError(f"Cannot open video: {self.video_path}")
+            self._cap = cap
+        return self._cap
+
     def __len__(self) -> int:
         return len(self.frame_indices)
 
     def __getitem__(self, idx: int):
         frame_num = self.frame_indices[idx]
 
-        cap = cv2.VideoCapture(self.video_path)
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
+        cap = self._get_capture()
+        # If this is not the immediate next frame after the last one we read
+        # in this worker, perform an explicit seek. With shuffle=False and the
+        # default sampler, each worker processes a contiguous, increasing chunk
+        # of indices, so most of the time this branch is skipped and we just
+        # read sequentially from the video file, which is much faster.
+        if self._last_frame_idx is None or frame_num != self._last_frame_idx + 1:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
         ret, frame = cap.read()
-        cap.release()
+        self._last_frame_idx = frame_num
 
         if not ret:
             # Return a black frame if read fails
@@ -128,6 +157,12 @@ class VideoFrameDataset(Dataset):
             frame = self.transform(image=frame)["image"]
 
         return frame, frame_num
+
+    def __del__(self):
+        # Ensure VideoCapture is released when the dataset is garbage-collected.
+        if getattr(self, "_cap", None) is not None:
+            self._cap.release()
+            self._cap = None
 
 
 # ─────────────────────────── Inference runner ────────────────────────────────
