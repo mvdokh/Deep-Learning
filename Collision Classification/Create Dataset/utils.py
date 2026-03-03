@@ -333,6 +333,12 @@ def build_datasets_per_experiment(
     summary: dict[str, dict] = {}
 
     for exp_dir in exp_dirs:
+        # Skip if pickle already exists
+        out_path = exp_dir / output_name
+        if out_path.exists():
+            print(f"⏭  {exp_dir.name} already has {output_name} — skipping.")
+            continue
+
         # Locate CSVs
         contact_csv_candidates = list(exp_dir.glob(f"{contact_csv_name}*.csv"))
         no_contact_csv_candidates = list(exp_dir.glob(f"{no_contact_csv_name}*.csv"))
