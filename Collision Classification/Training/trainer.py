@@ -123,7 +123,12 @@ def train_one_epoch(
 
     epoch_loss = running_loss / len(loader.dataset)
     epoch_acc = accuracy_score(all_labels, all_preds)
-    return {"loss": epoch_loss, "accuracy": epoch_acc}
+    return {
+        "loss": epoch_loss,
+        "accuracy": epoch_acc,
+        "preds": np.array(all_preds),
+        "labels": np.array(all_labels),
+    }
 
 
 # ─────────────────────────── Evaluation ──────────────────────────────────────
@@ -303,6 +308,68 @@ def plot_confusion_matrix(labels, preds, save_path: str | None = None):
     plt.tight_layout()
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.show()
+
+
+def _compute_cm_metrics(cm):
+    """Compute diagnostic metrics from a 2×2 confusion matrix [[TN,FP],[FN,TP]]."""
+    tn, fp, fn, tp = cm.ravel()
+    sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+    accuracy    = (tp + tn) / (tp + tn + fp + fn) if (tp + tn + fp + fn) > 0 else 0.0
+    npv         = tn / (tn + fn) if (tn + fn) > 0 else 0.0
+    precision   = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    return {
+        "Sensitivity": sensitivity,
+        "Specificity": specificity,
+        "Accuracy": accuracy,
+        "NPV": npv,
+        "Precision": precision,
+    }
+
+
+def plot_epoch_confusion_matrices(
+    train_labels, train_preds,
+    val_labels, val_preds,
+    epoch: int,
+    save_dir: str | None = None,
+):
+    """
+    Plot train and validation confusion matrices side-by-side for an epoch,
+    with Sensitivity, Specificity, Accuracy, NPV, and Precision shown below
+    each matrix.
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+    for ax, labels, preds, title in [
+        (axes[0], train_labels, train_preds, "Train"),
+        (axes[1], val_labels, val_preds, "Validation"),
+    ]:
+        cm = confusion_matrix(labels, preds)
+        disp = ConfusionMatrixDisplay(cm, display_labels=["No Collision", "Collision"])
+        disp.plot(ax=ax, cmap="Blues", values_format="d")
+        ax.set_title(f"{title} — Epoch {epoch}")
+
+        metrics = _compute_cm_metrics(cm)
+        metrics_text = (
+            f"Sensitivity (TPR): {metrics['Sensitivity']:.4f}    "
+            f"Specificity (TNR): {metrics['Specificity']:.4f}\n"
+            f"Accuracy: {metrics['Accuracy']:.4f}    "
+            f"NPV: {metrics['NPV']:.4f}    "
+            f"Precision (PPV): {metrics['Precision']:.4f}"
+        )
+        ax.text(
+            0.5, -0.18, metrics_text,
+            transform=ax.transAxes, fontsize=9,
+            ha="center", va="top", family="monospace",
+        )
+
+    plt.tight_layout(rect=[0, 0.05, 1, 1])
+    if save_dir:
+        import os
+        os.makedirs(save_dir, exist_ok=True)
+        path = os.path.join(save_dir, f"cm_epoch_{epoch:03d}.png")
+        fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.show()
 
 
