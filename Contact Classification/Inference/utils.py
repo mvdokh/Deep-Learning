@@ -235,3 +235,148 @@ def frames_to_intervals(df: pd.DataFrame, label_col: str = "contact", label_val:
     intervals.append((int(start), int(prev)))
 
     return pd.DataFrame(intervals, columns=["Start", "End"])
+
+
+# ─────────────────────────── Batch helpers ────────────────────────────────────
+
+import os
+
+VIDEO_EXTS = (".mp4", ".avi", ".mov", ".mkv")
+
+
+def find_video_folders(root: str, exts: tuple[str, ...] = VIDEO_EXTS) -> dict[str, list[str]]:
+    """
+    Walk ``root`` and return a mapping:
+
+        folder_path -> [video_path1, video_path2, ...]
+
+    Only folders that contain at least one video are included.
+    """
+    if not os.path.exists(root):
+        raise FileNotFoundError(f"Root path does not exist: {root}")
+
+    folders: dict[str, list[str]] = {}
+
+    for dirpath, _dirnames, filenames in os.walk(root):
+        videos = [
+            os.path.join(dirpath, fname)
+            for fname in filenames
+            if fname.lower().endswith(exts)
+        ]
+        if videos:
+            folders[dirpath] = sorted(videos)
+
+    return folders
+
+
+def run_video_contact_intervals(
+    model: nn.Module,
+    device: torch.device,
+    video_path: str,
+    *,
+    start_frame: int = 0,
+    end_frame: int | None = None,
+    img_size: int = 256,
+    batch_size: int = 64,
+    num_workers: int = 2,
+    threshold: float = 0.5,
+) -> pd.DataFrame:
+    """
+    Run contact inference on a single video and return the intervals DataFrame.
+    """
+    print(f"Creating dataset for {video_path}")
+
+    transform = get_inference_transforms(img_size)
+    dataset = VideoFrameDataset(
+        video_path=video_path,
+        start_frame=start_frame,
+        end_frame=end_frame,
+        transform=transform,
+    )
+    dataloader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+    )
+
+    print(
+        f"Running inference on {len(dataset):,} frames "
+        f"({len(dataloader):,} batches) for {os.path.basename(video_path)}"
+    )
+    results_df = run_inference(model, dataloader, device, threshold=threshold)
+
+    intervals_df = frames_to_intervals(results_df, label_col="contact", label_val=1)
+    print(f"Found {len(intervals_df)} contact intervals in {os.path.basename(video_path)}")
+    return intervals_df
+
+
+def batch_contact_intervals(
+    model: nn.Module,
+    device: torch.device,
+    data_root: str,
+    *,
+    start_frame: int = 0,
+    end_frame: int | None = None,
+    img_size: int = 256,
+    batch_size: int = 64,
+    num_workers: int = 2,
+    threshold: float = 0.5,
+) -> dict[str, list[str]]:
+    """
+    Run contact-interval inference over all videos under ``data_root``.
+
+    For each folder that contains video(s):
+      - If the folder has a single video, writes ``contact_intervals.csv``.
+      - If the folder has multiple videos, writes ``<video_stem>_contact_intervals.csv``.
+
+    Returns a mapping:
+        folder_path -> [csv_path1, csv_path2, ...]
+    """
+    folders = find_video_folders(data_root)
+    total_videos = sum(len(v) for v in folders.values())
+
+    print(
+        f"Discovered {total_videos} videos in {len(folders)} folders "
+        f"under {os.path.abspath(data_root)}"
+    )
+
+    if not folders:
+        print("No videos found. Nothing to do.")
+        return {}
+
+    outputs: dict[str, list[str]] = {}
+
+    for folder, videos in sorted(folders.items()):
+        print(f"\n=== Folder: {folder} ({len(videos)} video(s)) ===")
+        multi_video = len(videos) > 1
+
+        folder_outputs: list[str] = []
+        for video_path in videos:
+            print(f"\n--- Processing video: {video_path} ---")
+            intervals_df = run_video_contact_intervals(
+                model,
+                device,
+                video_path,
+                start_frame=start_frame,
+                end_frame=end_frame,
+                img_size=img_size,
+                batch_size=batch_size,
+                num_workers=num_workers,
+                threshold=threshold,
+            )
+
+            if multi_video:
+                stem = os.path.splitext(os.path.basename(video_path))[0]
+                out_path = os.path.join(folder, f"{stem}_contact_intervals.csv")
+            else:
+                out_path = os.path.join(folder, "contact_intervals.csv")
+
+            intervals_df.to_csv(out_path, index=False)
+            print(f"Saved contact intervals to: {out_path}")
+            folder_outputs.append(out_path)
+
+        outputs[folder] = folder_outputs
+
+    return outputs
