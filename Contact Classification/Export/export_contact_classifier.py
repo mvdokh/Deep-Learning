@@ -68,40 +68,21 @@ def load_trained_model(
 
 def _get_export_api():
     """
-    Return (export_fn, dynamic_dim) supporting multiple Torch versions.
+    Return (export_fn, Dim) from the public torch.export API.
 
-    On older Torch versions where dynamic shapes are not available,
-    `dynamic_dim` is returned as None and only static-shape export is
-    supported.
+    Dim is the class used to declare dynamic dimensions for inputs.
     """
-    # Prefer the public torch.export API when available.
     try:
         from torch import export as export_mod  # type: ignore[attr-defined]
-
-        export_fn = export_mod.export  # type: ignore[attr-defined]
-        dynamic_dim = getattr(export_mod, "dynamic_dim", None)
-        return export_fn, dynamic_dim
-    except Exception:  # pragma: no cover
-        pass
-
-    # Fallback to internal torch._export (API surface varies by version).
-    try:
-        import torch._export as _export  # type: ignore
-
-        if hasattr(_export, "export"):
-            export_fn = _export.export  # type: ignore[attr-defined]
-        elif hasattr(_export, "aot_export"):
-            export_fn = _export.aot_export  # type: ignore[attr-defined]
-        else:
-            raise ImportError("No suitable export function in torch._export")
-
-        dynamic_dim = getattr(_export, "dynamic_dim", None)
-        return export_fn, dynamic_dim
     except Exception as exc:  # pragma: no cover
         raise ImportError(
-            "Could not locate a compatible Torch export API. "
-            "Please upgrade PyTorch to 2.1+ or disable AOT export."
+            "torch.export is not available in this PyTorch version. "
+            "Please upgrade to PyTorch 2.1+ to use AOTInductor export."
         ) from exc
+
+    export_fn = export_mod.export  # type: ignore[attr-defined]
+    Dim = getattr(export_mod, "Dim", None)
+    return export_fn, Dim
 
 
 def export_contact_classifier_aot(
@@ -114,7 +95,7 @@ def export_contact_classifier_aot(
     static_batch_size: int = 1,
     dynamic_batch: bool = True,
     dynamic_min_batch: int = 1,
-    dynamic_max_batch: int = 32,
+    dynamic_max_batch: int = 128,
     dropout: float = 0.3,
 ) -> Path:
     """
@@ -151,10 +132,31 @@ def export_contact_classifier_aot(
         dropout=dropout,
     )
 
-    export_fn, dynamic_dim = _get_export_api()
+    export_fn, Dim = _get_export_api()
+
+    # Wrap the model so that the input tensor has a stable, known name `x`
+    # for use with torch.export dynamic shape annotations.
+    class ExportWrapper(nn.Module):
+        def __init__(self, inner: nn.Module):
+            super().__init__()
+            self.inner = inner
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:  # type: ignore[override]
+            return self.inner(x)
+
+    wrapped = ExportWrapper(model)
 
     if dynamic_batch:
-        example_bs = max(dynamic_min_batch, 1)
+        # For dynamic shapes, avoid using batch=1 as the example, because
+        # torch.export's shape analysis may then specialize the batch
+        # dimension to 1 and reject the dynamic annotation. Instead, pick a
+        # representative batch size within [dynamic_min_batch, dynamic_max_batch],
+        # preferring something like 8 when possible.
+        if dynamic_min_batch == dynamic_max_batch:
+            example_bs = max(dynamic_min_batch, 1)
+        else:
+            preferred = 8
+            example_bs = min(max(dynamic_min_batch, preferred), dynamic_max_batch)
     else:
         example_bs = max(static_batch_size, 1)
 
@@ -169,21 +171,36 @@ def export_contact_classifier_aot(
     inputs = (example_input,)
 
     if dynamic_batch:
-        if dynamic_dim is None:
+        if Dim is None:
             raise RuntimeError(
-                "Dynamic batch export is not supported by this PyTorch version. "
-                "Set dynamic_batch=False (USE_DYNAMIC_BATCH = False in the notebook) "
-                "or upgrade to a newer Torch release with dynamic export support."
+                "This PyTorch version does not provide torch.export.Dim, "
+                "which is required for dynamic batch AOT export. "
+                "Please upgrade PyTorch or export with dynamic_batch=False."
             )
 
-        batch_dyn = dynamic_dim(example_input, 0, min=dynamic_min_batch, max=dynamic_max_batch)
-        dynamic_shapes = {example_input: {0: batch_dyn}}
-        ep = export_fn(model, inputs, dynamic_shapes=dynamic_shapes)
+        # Declare a dynamic batch dimension for the first axis of input `x`.
+        batch_dim = Dim("batch", min=dynamic_min_batch, max=dynamic_max_batch)
+        dynamic_shapes = {"x": {0: batch_dim}}
+        exported = export_fn(wrapped, inputs, dynamic_shapes=dynamic_shapes)
     else:
-        ep = export_fn(model, inputs)
+        exported = export_fn(wrapped, inputs)
 
-    ep.save(str(export_path))
-    return export_path
+    # Compile the exported program to a PT2 package with AOTInductor.
+    try:
+        import torch._inductor as _inductor  # type: ignore[attr-defined]
+    except Exception as exc:  # pragma: no cover
+        raise ImportError(
+            "torch._inductor is not available. AOTInductor compilation "
+            "requires a PyTorch build with inductor enabled."
+        ) from exc
+
+    aoti_path = _inductor.aoti_compile_and_package(
+        exported,
+        package_path=str(export_path),
+        inductor_configs={"max_autotune": True},
+    )
+
+    return Path(aoti_path)
 
 
 if __name__ == "__main__":  # pragma: no cover
@@ -236,7 +253,7 @@ if __name__ == "__main__":  # pragma: no cover
     parser.add_argument(
         "--dynamic-max-batch",
         type=int,
-        default=32,
+        default=128,
         help="Maximum dynamic batch size.",
     )
 
