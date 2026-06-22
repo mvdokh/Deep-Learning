@@ -167,7 +167,7 @@ Open [`Training/train.ipynb`](Training/train.ipynb) and edit the config cell, th
 | Loss | `0.5 * MSE(tip) + 0.5 * MSE(line)` on heatmaps |
 | Early stopping | patience 15 on val loss |
 
-**Augmentations** (training): resize, ±15° rotation, horizontal flip, brightness/contrast. `ReplayCompose` applies the same random transform to all 8 frames; keypoints on the center frame are transformed jointly.
+**Augmentations** (training): resize, ±15° rotation, horizontal flip, mild brightness/contrast; plus light Gaussian blur, Gaussian/ISO noise, tiny dust specks (`CoarseDropout` 1–3 px), and occasional motion blur (all low probability). `ReplayCompose` applies the same draw to all 8 frames; keypoints follow geometry only.
 
 **Sampler**: `ExperimentGroupedBatchSampler` shuffles indices within each `experiment_id` only.
 

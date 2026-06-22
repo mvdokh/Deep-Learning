@@ -93,11 +93,12 @@ def set_seed(seed: int) -> None:
 
 
 def collate_batch(batch):
-    xs, hms, kps, exp_ids, frames = zip(*batch)
+    xs, hms, kps_orig, kps_tgt, exp_ids, frames = zip(*batch)
     return (
         torch.stack(xs, dim=0),
         torch.stack(hms, dim=0),
-        torch.stack(kps, dim=0),
+        torch.stack(kps_orig, dim=0),
+        torch.stack(kps_tgt, dim=0),
         torch.stack(exp_ids, dim=0),
         torch.stack(frames, dim=0),
     )
@@ -119,7 +120,7 @@ def evaluate(model, loader, criterion, device, img_w, img_h):
         "pck_mean": [],
     }
 
-    for x, hm, kps_orig, exp_ids, _ in loader:
+    for x, hm, kps_orig, _, exp_ids, _ in loader:
         x = x.to(device)
         hm = hm.to(device)
         kps_orig = kps_orig.to(device)
@@ -151,7 +152,7 @@ def train_one_epoch(model, loader, criterion, optimizer, device):
     model.train()
     loss_sum = 0.0
     n = 0
-    for x, hm, _, exp_ids, _ in loader:
+    for x, hm, _, _, exp_ids, _ in loader:
         x = x.to(device)
         hm = hm.to(device)
         exp_ids = exp_ids.to(device)

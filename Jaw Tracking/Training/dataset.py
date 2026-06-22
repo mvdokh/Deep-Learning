@@ -31,37 +31,84 @@ def get_img_size_hw(img_h: int = 240, img_w: int = 320) -> tuple[int, int]:
     return img_h, img_w
 
 
-def get_train_transforms(img_h: int = 240, img_w: int = 320) -> A.ReplayCompose:
+def get_geom_train_transforms(img_h: int = 240, img_w: int = 320) -> A.ReplayCompose:
+    """
+    Spatial augmentations + keypoint tracking (no normalize/tensor).
+
+    Geometric ops update keypoints; image-only ops below are replayed across
+    all 8 frames without moving labels (blur, noise, dust specks).
+    """
     return A.ReplayCompose(
         [
-            A.Resize(img_h, img_w),
+            A.Resize(height=img_h, width=img_w),
             A.Rotate(limit=15, p=0.5),
             A.HorizontalFlip(p=0.5),
             A.RandomBrightnessContrast(
                 brightness_limit=0.1, contrast_limit=0.1, p=0.2
             ),
+            # Mild image-only corruptions (low p, small magnitude)
+            A.GaussianBlur(blur_limit=(3, 5), sigma_limit=(0.1, 0.8), p=0.25),
+            A.GaussNoise(std_range=(0.01, 0.035), p=0.25),
+            A.ISONoise(
+                color_shift=(0.01, 0.02),
+                intensity=(0.05, 0.12),
+                p=0.15,
+            ),
+            A.CoarseDropout(
+                num_holes_range=(1, 5),
+                hole_height_range=(1, 3),
+                hole_width_range=(1, 3),
+                fill="random",
+                p=0.2,
+            ),
+            A.MotionBlur(blur_limit=3, p=0.1),
+        ],
+        keypoint_params=A.KeypointParams(format="xy", remove_invisible=False),
+    )
+
+
+def get_geom_val_transforms(img_h: int = 240, img_w: int = 320) -> A.Compose:
+    return A.Compose(
+        [
+            A.Resize(height=img_h, width=img_w),
+        ],
+        keypoint_params=A.KeypointParams(format="xy", remove_invisible=False),
+    )
+
+
+def get_tensor_transform() -> A.Compose:
+    return A.Compose(
+        [
             A.Normalize(
                 mean=[0.485, 0.456, 0.406],
                 std=[0.229, 0.224, 0.225],
             ),
             ToTensorV2(),
-        ],
-        keypoint_params=A.KeypointParams(format="xy", remove_invisible=False),
+        ]
     )
+
+
+def get_train_transforms(img_h: int = 240, img_w: int = 320) -> A.ReplayCompose:
+    """Backward-compatible alias (geom only; pair with :func:`get_tensor_transform`)."""
+    return get_geom_train_transforms(img_h, img_w)
 
 
 def get_val_transforms(img_h: int = 240, img_w: int = 320) -> A.Compose:
-    return A.Compose(
-        [
-            A.Resize(img_h, img_w),
-            A.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225],
-            ),
-            ToTensorV2(),
-        ],
-        keypoint_params=A.KeypointParams(format="xy", remove_invisible=False),
-    )
+    """Backward-compatible alias (geom only; pair with :func:`get_tensor_transform`)."""
+    return get_geom_val_transforms(img_h, img_w)
+
+
+def scale_keypoints_orig_to_target(
+    keypoints: list[tuple[float, float]],
+    target_w: int,
+    target_h: int,
+    orig_w: int = ORIG_W,
+    orig_h: int = ORIG_H,
+) -> list[tuple[float, float]]:
+    """Scale CSV keypoints (x in [0, orig_w], y in [0, orig_h]) to target resolution."""
+    sx = target_w / orig_w
+    sy = target_h / orig_h
+    return [(float(x) * sx, float(y) * sy) for x, y in keypoints]
 
 
 def gaussian_heatmap(
@@ -87,11 +134,18 @@ def keypoints_to_heatmaps(
     sigma_diameter_px: float = KEYPOINT_SIGMA_DIAMETER_PX,
     orig_w: int = ORIG_W,
     orig_h: int = ORIG_H,
+    in_target_pixels: bool = False,
 ) -> np.ndarray:
     """
     Build (2, H, W) heatmaps for tip and line.
 
-    ``sigma`` scales with resize so the Gaussian diameter stays ~10 px in original space.
+  ``sigma`` scales with resize so the Gaussian diameter stays ~10 px in original space.
+
+    Parameters
+    ----------
+    in_target_pixels
+        If True, ``keypoints`` are already in ``(width, height)`` pixel coords
+        (e.g. after albumentations). If False, they are in original 640×480 space.
     """
     scale_x = width / orig_w
     scale_y = height / orig_h
@@ -99,8 +153,11 @@ def keypoints_to_heatmaps(
 
     out = np.zeros((2, height, width), dtype=np.float32)
     for ch, (x, y) in enumerate(keypoints):
-        cx = x * scale_x
-        cy = y * scale_y
+        if in_target_pixels:
+            cx, cy = float(x), float(y)
+        else:
+            cx = x * scale_x
+            cy = y * scale_y
         out[ch] = gaussian_heatmap(height, width, cx, cy, sigma)
     return out
 
@@ -123,31 +180,40 @@ def _center_window_indices(
     return np.clip(idx, 0, n - 1)
 
 
+def _normalize_keypoints(
+    keypoints,
+) -> list[tuple[float, float]]:
+    return [(float(kp[0]), float(kp[1])) for kp in keypoints]
+
+
 def apply_replay_to_sequence_with_keypoints(
-    transform: A.ReplayCompose,
+    geom_transform: A.ReplayCompose,
+    tensor_transform: A.Compose,
     images: list[np.ndarray],
     center_index: int,
     keypoints: list[tuple[float, float]],
 ) -> tuple[list[torch.Tensor], list[tuple[float, float]]]:
     """
-    Apply one random augmentation to all frames; keypoints transformed via center frame.
+    Apply geom augmentations (with keypoints on center frame), then normalize/tensor.
     """
     kps = [tuple(kp) for kp in keypoints]
-    first = transform(image=images[center_index], keypoints=kps)
+    first = geom_transform(image=images[center_index], keypoints=kps)
     replay = first["replay"]
-    transformed_kps = first["keypoints"]
+    transformed_kps = _normalize_keypoints(first["keypoints"])
 
     tensors: list[torch.Tensor] = []
     for i, im in enumerate(images):
         if i == center_index:
-            tensors.append(first["image"])
+            aug = first["image"]
         else:
-            tensors.append(A.ReplayCompose.replay(replay, image=im)["image"])
+            aug = A.ReplayCompose.replay(replay, image=im)["image"]
+        tensors.append(tensor_transform(image=aug)["image"])
     return tensors, transformed_kps
 
 
 def apply_val_to_sequence_with_keypoints(
-    transform: A.Compose,
+    geom_transform: A.Compose,
+    tensor_transform: A.Compose,
     images: list[np.ndarray],
     center_index: int,
     keypoints: list[tuple[float, float]],
@@ -157,11 +223,12 @@ def apply_val_to_sequence_with_keypoints(
     transformed_kps = kps
     for i, im in enumerate(images):
         if i == center_index:
-            out = transform(image=im, keypoints=kps)
-            transformed_kps = out["keypoints"]
-            tensors.append(out["image"])
+            out = geom_transform(image=im, keypoints=kps)
+            transformed_kps = _normalize_keypoints(out["keypoints"])
+            aug = out["image"]
         else:
-            tensors.append(transform(image=im)["image"])
+            aug = geom_transform(image=im)["image"]
+        tensors.append(tensor_transform(image=aug)["image"])
     return tensors, transformed_kps
 
 
@@ -195,6 +262,8 @@ class JawKeypointSequenceDataset(Dataset):
             self.experiment_ids = np.full(len(self.frames), exp, dtype=np.int64)
 
         self.transform = transform
+        self.tensor_transform = get_tensor_transform()
+        self.is_replay_geom = isinstance(transform, A.ReplayCompose) if transform else False
         self.window_size = window_size
         self.edge_mode = edge_mode
         self.require_consecutive_frames = require_consecutive_frames
@@ -260,25 +329,47 @@ class JawKeypointSequenceDataset(Dataset):
         )
 
         if self.transform is not None:
-            if isinstance(self.transform, A.ReplayCompose):
+            if self.is_replay_geom:
                 tensors, transformed_kps = apply_replay_to_sequence_with_keypoints(
-                    self.transform, seq, self.center_index, keypoints
+                    self.transform,
+                    self.tensor_transform,
+                    seq,
+                    self.center_index,
+                    keypoints,
                 )
             else:
                 tensors, transformed_kps = apply_val_to_sequence_with_keypoints(
-                    self.transform, seq, self.center_index, keypoints
+                    self.transform,
+                    self.tensor_transform,
+                    seq,
+                    self.center_index,
+                    keypoints,
                 )
             heatmaps = keypoints_to_heatmaps(
-                transformed_kps, self.img_h, self.img_w
+                transformed_kps, self.img_h, self.img_w, in_target_pixels=True
+            )
+            keypoints_target = torch.tensor(
+                [[transformed_kps[0][0], transformed_kps[0][1]],
+                 [transformed_kps[1][0], transformed_kps[1][1]]],
+                dtype=torch.float32,
             )
         else:
             tensors = [
                 torch.from_numpy(im).permute(2, 0, 1).float() / 255.0 for im in seq
             ]
-            heatmaps = keypoints_to_heatmaps(keypoints, self.img_h, self.img_w)
+            scaled = scale_keypoints_orig_to_target(
+                keypoints, self.img_w, self.img_h
+            )
+            heatmaps = keypoints_to_heatmaps(
+                scaled, self.img_h, self.img_w, in_target_pixels=True
+            )
+            keypoints_target = torch.tensor(
+                [[scaled[0][0], scaled[0][1]], [scaled[1][0], scaled[1][1]]],
+                dtype=torch.float32,
+            )
 
         x = torch.stack(tensors, dim=0)
         hm = torch.from_numpy(heatmaps)
         exp_id = torch.tensor(int(vid), dtype=torch.long)
         frame_num = torch.tensor(int(self.frame_numbers[center_flat]), dtype=torch.long)
-        return x, hm, keypoints_orig, exp_id, frame_num
+        return x, hm, keypoints_orig, keypoints_target, exp_id, frame_num
