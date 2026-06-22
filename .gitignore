@@ -1,1 +1,4 @@
 *.pt
+Jaw Tracking/data/
+Jaw Tracking/Training/checkpoints/
+Jaw Tracking/Training/training_output/
