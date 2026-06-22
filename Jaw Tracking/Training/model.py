@@ -133,9 +133,9 @@ class JawKeypointTracker(nn.Module):
         pretrained: bool = True,
         freeze_backbone: bool = False,
         window_size: int = 8,
-        temporal_hidden: int = 256,
+        temporal_hidden: int = 384,
         temporal_layers: int = 3,
-        decoder_hidden: int = 256,
+        decoder_hidden: int = 512,
         num_conditions: int = NUM_CONDITIONS,
     ) -> None:
         super().__init__()
@@ -211,9 +211,9 @@ def build_model(
     pretrained: bool = True,
     freeze_backbone: bool = False,
     window_size: int = 8,
-    temporal_hidden: int = 256,
+    temporal_hidden: int = 384,
     temporal_layers: int = 3,
-    decoder_hidden: int = 256,
+    decoder_hidden: int = 512,
 ) -> JawKeypointTracker:
     return JawKeypointTracker(
         pretrained=pretrained,

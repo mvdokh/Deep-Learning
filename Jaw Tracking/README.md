@@ -40,6 +40,78 @@ IRt_BiPoles/
 
 Default source path (WSL): `/mnt/c/Users/wanglab/Desktop/Tip+Base/`
 
+## Environment setup
+
+Use a dedicated conda environment in **WSL** (where this repo lives). Your RTX 5060 Ti is a **Blackwell** GPU (`sm_120`) — you must install PyTorch with **CUDA 12.8** (`cu128`). Older wheels (`cu124`, `cu126`) will not use the GPU correctly.
+
+### 1. Confirm WSL sees the GPU
+
+In a **WSL** terminal (not PowerShell):
+
+```bash
+nvidia-smi
+```
+
+You should see your RTX 5060 Ti. If this fails, update the NVIDIA driver on Windows (you already have 595.x) and ensure WSL2 is up to date (`wsl --update` from PowerShell).
+
+### 2. Create the conda environment
+
+```bash
+cd "/home/wanglab/testing/Deep-Learning/Jaw Tracking"
+
+conda create -n jaw-tracking python=3.10 -y
+conda activate jaw-tracking
+
+# RTX 5060 / 5060 Ti / 50-series — requires cu128 (NOT cu124)
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+
+pip install -r requirements.txt
+
+python -m ipykernel install --user --name jaw-tracking --display-name "Python (jaw-tracking)"
+```
+
+If `cu128` stable fails or you see `sm_120 is not compatible`, use the nightly build:
+
+```bash
+pip uninstall -y torch torchvision
+pip install --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/cu128
+```
+
+### 3. Verify GPU
+
+```bash
+conda activate jaw-tracking
+python -c "
+import torch
+print('torch:', torch.__version__)
+print('cuda available:', torch.cuda.is_available())
+if torch.cuda.is_available():
+    print('gpu:', torch.cuda.get_device_name(0))
+    x = torch.randn(4, 4, device='cuda')
+    print('cuda tensor ok:', x.device)
+"
+```
+
+Expected: `cuda available: True` and `NVIDIA GeForce RTX 5060 Ti`.
+
+### 4. Open notebooks in Cursor
+
+1. Open the project in WSL (not Windows path).
+2. `conda activate jaw-tracking`
+3. Open `Training/train.ipynb`
+4. Select kernel **Python (jaw-tracking)** (top-right).
+5. Ensure `../data/train.pkl` exists (run dataset creation below if not).
+
+The training notebook will use GPU automatically when `torch.cuda.is_available()` is `True`.
+
+### CPU-only fallback
+
+Only if you cannot get WSL GPU working:
+
+```bash
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+```
+
 ## Quick start
 
 ```bash
@@ -52,7 +124,10 @@ python create_dataset.py --data_root /mnt/c/Users/wanglab/Desktop/Tip+Base
 
 # 2. Train
 cd ../Training
-python train.py --train_pkl ../data/train.pkl --val_pkl ../data/val.pkl --out_dir ./checkpoints
+# Option A: notebook (recommended)
+#   Open train.ipynb, edit config cell, run all cells
+# Option B: CLI
+#   python train.py --train_pkl ../data/train.pkl --val_pkl ../data/val.pkl --out_dir ./checkpoints
 
 # 3. Predict (see Prediction/predict.ipynb)
 ```
@@ -79,6 +154,8 @@ Outputs in `data/`:
 - `merged.pkl`, `train.pkl`, `val.pkl` (80/20 split within each condition)
 
 ## Training
+
+Open [`Training/train.ipynb`](Training/train.ipynb) and edit the config cell, then run all cells. It calls `run_training()` from [`train.py`](Training/train.py) — same logic as the CLI, no terminal required.
 
 | Setting | Default |
 |---------|---------|

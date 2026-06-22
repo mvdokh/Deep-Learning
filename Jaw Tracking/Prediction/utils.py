@@ -49,9 +49,9 @@ def load_jaw_model(checkpoint_path: str, device: torch.device) -> nn.Module:
         pretrained=False,
         freeze_backbone=False,
         window_size=int(cfg.get("window_size", 8)),
-        temporal_hidden=int(cfg.get("temporal_hidden", 256)),
+        temporal_hidden=int(cfg.get("temporal_hidden", 384)),
         temporal_layers=int(cfg.get("temporal_layers", 3)),
-        decoder_hidden=int(cfg.get("decoder_hidden", 256)),
+        decoder_hidden=int(cfg.get("decoder_hidden", 512)),
     )
     model.load_state_dict(ckpt["model_state_dict"], strict=True)
     model.to(device)

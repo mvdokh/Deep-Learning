@@ -22,5 +22,8 @@ Extracts figures and captions from scientific PDFs, then generates natural-langu
 ### Keypoints
 Custom keypoint detection using PyTorch's Keypoint R-CNN. Includes COCO-format annotation conversion and the torchvision reference training utilities for detecting keypoints on glue tubes.
 
+### Jaw Tracking
+Temporal dual-keypoint (jaw tip + jaw line) heatmap regression across three experimental conditions (IRt_BiPoles, IRt_TeLC, PCRt_BiPoles). Three-stage pipeline: dataset creation, training, and prediction.
+
 ### Testing
 Hierarchical summarization pipeline using BART (`facebook/bart-large-cnn`). Extracts text from PDFs, splits into chunks, and recursively summarizes. Includes fine-tuning experiments.

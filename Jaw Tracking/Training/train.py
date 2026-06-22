@@ -11,6 +11,8 @@ from __future__ import annotations
 import argparse
 import copy
 import os
+from argparse import Namespace
+from typing import Any
 
 import numpy as np
 import torch
@@ -23,6 +25,33 @@ from model import build_model, count_parameters
 from sampler import ExperimentGroupedBatchSampler
 
 
+def default_training_config(**overrides: Any) -> Namespace:
+    """Default hyperparameters for notebook or programmatic training."""
+    cfg = Namespace(
+        train_pkl="../data/train.pkl",
+        val_pkl="../data/val.pkl",
+        out_dir="./checkpoints",
+        epochs=80,
+        batch_size=8,
+        lr=1e-3,
+        weight_decay=1e-4,
+        num_workers=4,
+        img_h=240,
+        img_w=320,
+        window_size=8,
+        temporal_hidden=384,
+        temporal_layers=3,
+        decoder_hidden=512,
+        edge_mode="pad",
+        no_require_consecutive=False,
+        no_freeze_backbone=False,
+        unfreeze_backbone_epoch=0,
+        patience=15,
+        seed=42,
+    )
+    for key, value in overrides.items():
+        setattr(cfg, key, value)
+    return cfg
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Jaw keypoint tracking training")
     p.add_argument("--train_pkl", type=str, required=True)
@@ -36,9 +65,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--img_h", type=int, default=240)
     p.add_argument("--img_w", type=int, default=320)
     p.add_argument("--window_size", type=int, default=8)
-    p.add_argument("--temporal_hidden", type=int, default=256)
+    p.add_argument("--temporal_hidden", type=int, default=384)
     p.add_argument("--temporal_layers", type=int, default=3)
-    p.add_argument("--decoder_hidden", type=int, default=256)
+    p.add_argument("--decoder_hidden", type=int, default=512)
     p.add_argument("--edge_mode", type=str, default="pad", choices=["pad", "skip"])
     p.add_argument(
         "--no_require_consecutive",
@@ -136,8 +165,15 @@ def train_one_epoch(model, loader, criterion, optimizer, device):
     return loss_sum / max(n, 1)
 
 
-def main() -> None:
-    args = parse_args()
+def run_training(args: Namespace) -> dict:
+    """
+    Full training loop (used by CLI and :mod:`train.ipynb`).
+
+    Returns
+    -------
+    dict
+        ``model``, ``history``, ``best_val_loss``, ``out_dir``, ``device``, ``config``
+    """
     set_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     os.makedirs(args.out_dir, exist_ok=True)
@@ -208,6 +244,12 @@ def main() -> None:
     best_val = float("inf")
     best_state = None
     patience_counter = 0
+    history: dict[str, list[float]] = {
+        "train_loss": [],
+        "val_loss": [],
+        "val_pck_mean": [],
+        "val_rmse_mean": [],
+    }
 
     for epoch in range(args.epochs):
         train_sampler.set_epoch(epoch)
@@ -225,6 +267,11 @@ def main() -> None:
         val_m = evaluate(
             model, val_loader, criterion, device, args.img_w, args.img_h
         )
+
+        history["train_loss"].append(tr_loss)
+        history["val_loss"].append(val_m["loss"])
+        history["val_pck_mean"].append(val_m["pck_mean"])
+        history["val_rmse_mean"].append(val_m["rmse_mean"])
 
         print(
             f"Epoch {epoch+1}/{args.epochs}  train_loss={tr_loss:.4f}  "
@@ -260,6 +307,19 @@ def main() -> None:
     final_path = os.path.join(args.out_dir, "final_model.pt")
     torch.save({"model_state_dict": model.state_dict(), "config": vars(args)}, final_path)
     print(f"Done. Final weights → {final_path}")
+
+    return {
+        "model": model,
+        "history": history,
+        "best_val_loss": best_val,
+        "out_dir": args.out_dir,
+        "device": device,
+        "config": args,
+    }
+
+
+def main() -> None:
+    run_training(parse_args())
 
 
 if __name__ == "__main__":
