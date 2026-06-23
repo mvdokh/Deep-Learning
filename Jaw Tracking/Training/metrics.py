@@ -8,19 +8,16 @@ import torch
 
 def soft_argmax_2d(heatmap: torch.Tensor) -> torch.Tensor:
     """
-    Differentiable coordinate decode from a single-channel heatmap.
+    Decode coordinates from a single-channel heatmap.
 
-    Parameters
-    ----------
-    heatmap : (B, H, W)
-
-    Returns
-    -------
-    coords : (B, 2)  x, y in heatmap pixel coordinates
+    Uses normalized non-negative mass (not ``softmax`` on raw values). Plain
+    softmax treats every zero pixel as ``exp(0)=1``, so sparse Gaussians with
+    mostly-zero backgrounds collapse to the image center.
     """
     b, h, w = heatmap.shape
-    flat = heatmap.reshape(b, -1)
-    prob = torch.softmax(flat, dim=1).reshape(b, h, w)
+    prob = heatmap.clamp(min=0).reshape(b, -1)
+    prob = prob / prob.sum(dim=1, keepdim=True).clamp(min=1e-8)
+    prob = prob.reshape(b, h, w)
 
     xs = torch.arange(w, device=heatmap.device, dtype=heatmap.dtype)
     ys = torch.arange(h, device=heatmap.device, dtype=heatmap.dtype)
@@ -45,8 +42,8 @@ def scale_coords_to_original(
     orig_w: int = 640,
     orig_h: int = 480,
 ) -> torch.Tensor:
-    """Scale heatmap-space coords to original image pixels."""
-    scale = coords.new_tensor([img_w / orig_w, img_h / orig_h])
+    """Scale model heatmap coords (img_w×img_h) → original image pixels (orig_w×orig_h)."""
+    scale = coords.new_tensor([orig_w / img_w, orig_h / img_h])
     return coords * scale
 
 

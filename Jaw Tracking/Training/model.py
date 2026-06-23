@@ -1,14 +1,7 @@
 """
-Jaw keypoint tracker: EfficientNet-B2 backbone + temporal context + condition FiLM + heatmap head.
+Jaw keypoint tracker: EfficientNet-B2 backbone + temporal context + heatmap head.
 
-Tensor flow
------------
-Input ``x``: (B, T, C, H, W), ``condition_ids``: (B,)
-
-1. Per-frame spatial features from backbone (features_only).
-2. Global-pool per frame → (B, T, F) → TemporalConvNet → center (B, F).
-3. Condition embedding + temporal context → FiLM modulates center spatial map.
-4. HeatmapDecoder → (B, 2, H, W).
+One shared model is trained on all experimental conditions (no condition embedding).
 """
 
 from __future__ import annotations
@@ -19,7 +12,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 EFFICIENTNET_B2_FEATURE_DIM = 1408
-NUM_CONDITIONS = 3
 
 
 class TemporalConvNet(nn.Module):
@@ -61,34 +53,19 @@ class TemporalConvNet(nn.Module):
         return x[:, self.center_index, :]
 
 
-class ConditionFiLM(nn.Module):
-    """Condition embedding + temporal context → scale/shift on spatial features."""
+class TemporalFiLM(nn.Module):
+    """Modulate center-frame spatial features using temporal context only."""
 
-    def __init__(
-        self,
-        spatial_channels: int,
-        temporal_dim: int,
-        num_conditions: int = NUM_CONDITIONS,
-        embed_dim: int = 64,
-    ) -> None:
+    def __init__(self, spatial_channels: int, temporal_dim: int) -> None:
         super().__init__()
-        self.embed = nn.Embedding(num_conditions, embed_dim)
         self.proj = nn.Sequential(
-            nn.Linear(temporal_dim + embed_dim, spatial_channels * 2),
+            nn.Linear(temporal_dim, spatial_channels * 2),
             nn.ReLU(inplace=True),
             nn.Linear(spatial_channels * 2, spatial_channels * 2),
         )
 
-    def forward(
-        self,
-        spatial: torch.Tensor,
-        temporal_ctx: torch.Tensor,
-        condition_ids: torch.Tensor,
-    ) -> torch.Tensor:
-        # spatial: (B, C, h, w)
-        cond = self.embed(condition_ids)
-        ctx = torch.cat([temporal_ctx, cond], dim=1)
-        gamma_beta = self.proj(ctx)
+    def forward(self, spatial: torch.Tensor, temporal_ctx: torch.Tensor) -> torch.Tensor:
+        gamma_beta = self.proj(temporal_ctx)
         gamma, beta = gamma_beta.chunk(2, dim=1)
         gamma = gamma.unsqueeze(-1).unsqueeze(-1)
         beta = beta.unsqueeze(-1).unsqueeze(-1)
@@ -118,11 +95,12 @@ class HeatmapDecoder(nn.Module):
         )
         self.mid_channels = hidden // 2
         self.out_conv = nn.Conv2d(hidden // 2, out_channels, 1)
+        nn.init.constant_(self.out_conv.bias, -2.0)
 
     def forward(self, x: torch.Tensor, out_h: int, out_w: int) -> torch.Tensor:
         x = self.refine(x)
         x = F.interpolate(x, size=(out_h, out_w), mode="bilinear", align_corners=False)
-        return self.out_conv(x)
+        return torch.sigmoid(self.out_conv(x))
 
 
 class JawKeypointTracker(nn.Module):
@@ -136,7 +114,6 @@ class JawKeypointTracker(nn.Module):
         temporal_hidden: int = 384,
         temporal_layers: int = 3,
         decoder_hidden: int = 512,
-        num_conditions: int = NUM_CONDITIONS,
     ) -> None:
         super().__init__()
         self.window_size = window_size
@@ -167,37 +144,29 @@ class JawKeypointTracker(nn.Module):
             num_layers=temporal_layers,
             window_size=window_size,
         )
-        self.film = ConditionFiLM(
-            self.spatial_channels,
-            self.temporal.out_dim,
-            num_conditions=num_conditions,
-        )
+        self.film = TemporalFiLM(self.spatial_channels, self.temporal.out_dim)
         self.decoder = HeatmapDecoder(
             self.spatial_channels,
             out_channels=2,
             hidden=decoder_hidden,
         )
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        condition_ids: torch.Tensor,
-    ) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (B, T, C, H, W)
         b, t, c, h, w = x.shape
         assert t == self.window_size
 
         flat = x.reshape(b * t, c, h, w)
         spatial_list = self.backbone(flat)
-        spatial = spatial_list[0]  # (B*T, C, h', w')
+        spatial = spatial_list[0]
         _, sc, sh, sw = spatial.shape
 
-        pooled = self.global_pool(spatial).flatten(1)  # (B*T, C)
+        pooled = self.global_pool(spatial).flatten(1)
         pooled = pooled.reshape(b, t, -1)
         temporal_ctx = self.temporal(pooled)
 
         center_spatial = spatial.reshape(b, t, sc, sh, sw)[:, self.center_index]
-        modulated = self.film(center_spatial, temporal_ctx, condition_ids)
+        modulated = self.film(center_spatial, temporal_ctx)
         heatmaps = self.decoder(modulated, out_h=h, out_w=w)
         return heatmaps
 

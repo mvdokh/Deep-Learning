@@ -1,5 +1,5 @@
 """
-Experiment-grouped batch sampler: shuffles within each experiment, never mixes conditions.
+Experiment-grouped batch sampler: shuffles within each condition, never mixes conditions.
 """
 
 from __future__ import annotations
@@ -14,7 +14,8 @@ from torch.utils.data import Sampler
 class ExperimentGroupedBatchSampler(Sampler[list[int]]):
     """
     Yields batches of dataset indices where every index in a batch shares the same
-    ``experiment_id``. Indices are shuffled **within** each experiment each epoch.
+    ``experiment_id`` (one per condition). Indices are shuffled **within** each
+    condition each epoch.
     """
 
     def __init__(

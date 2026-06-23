@@ -1,5 +1,5 @@
 """
-Build per-condition and merged pickle datasets for jaw keypoint tracking.
+Build merged pickle datasets for jaw keypoint tracking.
 
 Run from this directory::
 
@@ -52,18 +52,23 @@ def main() -> None:
             raise FileNotFoundError(f"Missing condition folder: {cond_dir}")
         print(f"\n▶ Processing {name}")
         data = load_aligned_condition(cond_dir, name, CONDITION_TO_ID[name])
-        out_path = out_dir / f"{name}.pkl"
-        save_pkl(data, str(out_path))
-        pkl_paths.append(str(out_path))
+        tmp_path = out_dir / f".{name}.tmp.pkl"
+        save_pkl(data, str(tmp_path))
+        pkl_paths.append(str(tmp_path))
 
     merged_path = out_dir / "merged.pkl"
     merged = merge_pickles(pkl_paths, str(merged_path))
 
-    train_data, val_data = split_train_val(merged, val_fraction=args.val_fraction, seed=args.seed)
+    for tmp in pkl_paths:
+        Path(tmp).unlink(missing_ok=True)
+
+    train_data, val_data = split_train_val(
+        merged, val_fraction=args.val_fraction, seed=args.seed
+    )
     save_pkl(train_data, str(out_dir / "train.pkl"))
     save_pkl(val_data, str(out_dir / "val.pkl"))
 
-    print(f"\n✅ Done. Outputs in {out_dir}")
+    print(f"\n✅ Done. Outputs: merged.pkl, train.pkl, val.pkl in {out_dir}")
 
 
 if __name__ == "__main__":

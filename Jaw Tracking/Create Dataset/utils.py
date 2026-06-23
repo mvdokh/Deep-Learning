@@ -121,16 +121,23 @@ def split_train_val(
     val_fraction: float = 0.2,
     seed: int = 42,
 ) -> tuple[dict, dict]:
-    """80/20 random split within each experiment_id."""
-    rng = np.random.default_rng(seed)
+    """
+    Temporal 80/20 split within each experiment_id.
+
+    Frames are sorted by ``frame_numbers``; the last ``val_fraction`` of each
+    clip goes to validation so both splits keep consecutive frame runs (needed
+    for 8-frame windows with ``require_consecutive_frames=True``).
+    """
+    del seed  # temporal split is deterministic; kept for API compatibility
     n = len(merged["frame_numbers"])
     train_mask = np.zeros(n, dtype=bool)
 
     for exp_id in np.unique(merged["experiment_ids"]):
         idx = np.where(merged["experiment_ids"] == exp_id)[0]
-        rng.shuffle(idx)
-        n_val = max(1, int(round(len(idx) * val_fraction)))
-        train_mask[idx[n_val:]] = True
+        order = np.argsort(merged["frame_numbers"][idx], kind="mergesort")
+        sorted_idx = idx[order]
+        n_val = max(1, int(round(len(sorted_idx) * val_fraction)))
+        train_mask[sorted_idx[:-n_val]] = True
 
     def subset(mask: np.ndarray) -> dict:
         return {
