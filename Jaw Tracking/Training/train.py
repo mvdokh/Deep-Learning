@@ -58,6 +58,7 @@ def default_training_config(**overrides: Any) -> Namespace:
         no_require_consecutive=False,
         no_freeze_backbone=False,
         unfreeze_backbone_epoch=15,
+        batch_size_unfrozen=16,
         coord_weight=1.0,
         patience=15,
         seed=42,
@@ -92,6 +93,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no_require_consecutive", action="store_true")
     p.add_argument("--no_freeze_backbone", action="store_true")
     p.add_argument("--unfreeze_backbone_epoch", type=int, default=15)
+    p.add_argument("--batch_size_unfrozen", type=int, default=16)
     p.add_argument("--coord_weight", type=float, default=1.0)
     p.add_argument("--patience", type=int, default=15)
     p.add_argument("--seed", type=int, default=42)
@@ -115,6 +117,38 @@ def collate_batch(batch):
         torch.stack(exp_ids, dim=0),
         torch.stack(frames, dim=0),
     )
+
+
+def make_train_val_loaders(
+    train_ds: JawKeypointSequenceDataset,
+    val_ds: JawKeypointSequenceDataset,
+    batch_size: int,
+    *,
+    seed: int,
+    num_workers: int,
+) -> tuple[ExperimentGroupedBatchSampler, DataLoader, DataLoader]:
+    train_sampler = ExperimentGroupedBatchSampler(
+        train_ds.center_indices_for_sampler,
+        batch_size=batch_size,
+        seed=seed,
+    )
+    pin = torch.cuda.is_available()
+    train_loader = DataLoader(
+        train_ds,
+        batch_sampler=train_sampler,
+        num_workers=num_workers,
+        pin_memory=pin,
+        collate_fn=collate_batch,
+    )
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=pin,
+        collate_fn=collate_batch,
+    )
+    return train_sampler, train_loader, val_loader
 
 
 @torch.no_grad()
@@ -263,26 +297,14 @@ def run_training(args: Namespace) -> dict:
         img_w=args.img_w,
     )
 
-    train_sampler = ExperimentGroupedBatchSampler(
-        train_ds.center_indices_for_sampler,
-        batch_size=args.batch_size,
-        seed=args.seed,
-    )
-    train_loader = DataLoader(
+    train_sampler, train_loader, val_loader = make_train_val_loaders(
         train_ds,
-        batch_sampler=train_sampler,
-        num_workers=args.num_workers,
-        pin_memory=torch.cuda.is_available(),
-        collate_fn=collate_batch,
-    )
-    val_loader = DataLoader(
         val_ds,
-        batch_size=args.batch_size,
-        shuffle=False,
+        args.batch_size,
+        seed=args.seed,
         num_workers=args.num_workers,
-        pin_memory=torch.cuda.is_available(),
-        collate_fn=collate_batch,
     )
+    current_batch_size = args.batch_size
 
     freeze_bb = not args.no_freeze_backbone
     model = build_model(
@@ -330,8 +352,24 @@ def run_training(args: Namespace) -> dict:
                 lr=args.lr * 0.1,
                 weight_decay=args.weight_decay,
             )
+            unfrozen_bs = getattr(args, "batch_size_unfrozen", 16)
+            if unfrozen_bs != current_batch_size:
+                train_sampler, train_loader, val_loader = make_train_val_loaders(
+                    train_ds,
+                    val_ds,
+                    unfrozen_bs,
+                    seed=args.seed,
+                    num_workers=args.num_workers,
+                )
+                train_sampler.set_epoch(epoch)
+                current_batch_size = unfrozen_bs
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
             if show_progress:
-                tqdm.write(f"Epoch {epoch_no}: backbone unfrozen")
+                msg = f"Epoch {epoch_no}: backbone unfrozen"
+                if unfrozen_bs != args.batch_size:
+                    msg += f", batch_size {args.batch_size} → {unfrozen_bs}"
+                tqdm.write(msg)
 
         tr_loss = train_one_epoch(
             model,
@@ -434,6 +472,7 @@ def args_from_cli(cli: argparse.Namespace) -> Namespace:
         no_require_consecutive=cli.no_require_consecutive,
         no_freeze_backbone=cli.no_freeze_backbone,
         unfreeze_backbone_epoch=cli.unfreeze_backbone_epoch,
+        batch_size_unfrozen=cli.batch_size_unfrozen,
         coord_weight=cli.coord_weight,
         patience=cli.patience,
         seed=cli.seed,
