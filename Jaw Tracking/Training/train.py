@@ -17,18 +17,21 @@ from argparse import Namespace
 from pathlib import Path
 from typing import Any
 
+from collections import defaultdict
+
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from dataset import (
+    BIPOLES_EXPERIMENT_IDS,
     JawKeypointSequenceDataset,
     get_geom_train_transforms,
     get_geom_val_transforms,
 )
 from losses import JawKeypointLoss
-from metrics import compute_keypoint_metrics, heatmaps_to_coords
+from metrics import compute_keypoint_metrics, heatmaps_to_coords, scale_coords_to_original
 from model import build_model, count_parameters
 from sampler import ExperimentGroupedBatchSampler
 
@@ -57,9 +60,12 @@ def default_training_config(**overrides: Any) -> Namespace:
         edge_mode="pad",
         no_require_consecutive=False,
         no_freeze_backbone=False,
-        unfreeze_backbone_epoch=15,
+        unfreeze_backbone_epoch=0,
         batch_size_unfrozen=16,
         coord_weight=1.0,
+        tip_coord_weight=2.0,
+        occluded_tip_weight=0.25,
+        relative_offset_weight=0.5,
         patience=15,
         seed=42,
         show_progress=True,
@@ -92,9 +98,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--edge_mode", type=str, default="pad", choices=["pad", "skip"])
     p.add_argument("--no_require_consecutive", action="store_true")
     p.add_argument("--no_freeze_backbone", action="store_true")
-    p.add_argument("--unfreeze_backbone_epoch", type=int, default=15)
+    p.add_argument("--unfreeze_backbone_epoch", type=int, default=0)
     p.add_argument("--batch_size_unfrozen", type=int, default=16)
     p.add_argument("--coord_weight", type=float, default=1.0)
+    p.add_argument("--tip_coord_weight", type=float, default=2.0)
+    p.add_argument("--occluded_tip_weight", type=float, default=0.25)
+    p.add_argument("--relative_offset_weight", type=float, default=0.5)
     p.add_argument("--patience", type=int, default=15)
     p.add_argument("--seed", type=int, default=42)
     return p.parse_args()
@@ -108,7 +117,7 @@ def set_seed(seed: int) -> None:
 
 
 def collate_batch(batch):
-    xs, hms, kps_orig, kps_tgt, exp_ids, frames = zip(*batch)
+    xs, hms, kps_orig, kps_tgt, exp_ids, frames, tip_weights = zip(*batch)
     return (
         torch.stack(xs, dim=0),
         torch.stack(hms, dim=0),
@@ -116,6 +125,7 @@ def collate_batch(batch):
         torch.stack(kps_tgt, dim=0),
         torch.stack(exp_ids, dim=0),
         torch.stack(frames, dim=0),
+        torch.stack(tip_weights, dim=0),
     )
 
 
@@ -151,6 +161,37 @@ def make_train_val_loaders(
     return train_sampler, train_loader, val_loader
 
 
+def _aggregate_per_condition_metrics(
+    per_sample: dict[int, dict[str, list[float]]],
+) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for exp_id, buckets in per_sample.items():
+        name = CONDITIONS[int(exp_id)] if int(exp_id) < len(CONDITIONS) else str(exp_id)
+        tip = buckets.get("tip_dist", [])
+        line = buckets.get("line_dist", [])
+        if tip:
+            out[f"{name}_rmse_tip"] = float(np.sqrt(np.mean(np.square(tip))))
+        if line:
+            out[f"{name}_rmse_line"] = float(np.sqrt(np.mean(np.square(line))))
+        if tip or line:
+            all_d = tip + line
+            out[f"{name}_rmse_mean"] = float(np.sqrt(np.mean(np.square(all_d))))
+    return out
+
+
+def _bipoles_rmse_mean(per_sample: dict[int, dict[str, list[float]]]) -> float:
+    dists: list[float] = []
+    for exp_id in BIPOLES_EXPERIMENT_IDS:
+        buckets = per_sample.get(int(exp_id), {})
+        tip = buckets.get("tip_dist", [])
+        line = buckets.get("line_dist", [])
+        dists.extend(tip)
+        dists.extend(line)
+    if not dists:
+        return float("inf")
+    return float(np.sqrt(np.mean(np.square(dists))))
+
+
 @torch.no_grad()
 def evaluate(
     model,
@@ -167,6 +208,7 @@ def evaluate(
     loss_sum = 0.0
     loss_hm_sum = 0.0
     loss_coord_sum = 0.0
+    loss_rel_sum = 0.0
     n = 0
     metric_acc: dict[str, list[float]] = {
         "rmse_tip": [],
@@ -176,6 +218,9 @@ def evaluate(
         "pck_line": [],
         "pck_mean": [],
     }
+    per_cond: dict[int, dict[str, list[float]]] = defaultdict(
+        lambda: {"tip_dist": [], "line_dist": []}
+    )
 
     desc = f"Epoch {epoch} val" if epoch is not None else "Val"
     batch_iter = tqdm(
@@ -186,18 +231,20 @@ def evaluate(
         leave=True,
         disable=not show_progress,
     )
-    for x, hm, kps_orig, kps_tgt, _, _ in batch_iter:
+    for x, hm, kps_orig, kps_tgt, exp_ids, _, tip_weights in batch_iter:
         x = x.to(device)
         hm = hm.to(device)
         kps_orig = kps_orig.to(device)
         kps_tgt = kps_tgt.to(device)
+        tip_weights = tip_weights.to(device)
 
         pred = model(x)
-        loss, parts = criterion(pred, hm, kps_tgt)
+        loss, parts = criterion(pred, hm, kps_tgt, tip_weights)
         bs = x.size(0)
         loss_sum += loss.item() * bs
         loss_hm_sum += parts["loss_hm"] * bs
         loss_coord_sum += parts["loss_coord"] * bs
+        loss_rel_sum += parts.get("loss_rel", 0.0) * bs
         n += bs
 
         pred_coords = heatmaps_to_coords(pred)
@@ -207,9 +254,19 @@ def evaluate(
         for k, v in m.items():
             metric_acc[k].append(v)
 
+        pred_orig = scale_coords_to_original(
+            pred_coords, img_w, img_h, orig_w=640, orig_h=480
+        )
+        dist = torch.linalg.norm(pred_orig - kps_orig, dim=-1)
+        for i in range(bs):
+            eid = int(exp_ids[i].item())
+            per_cond[eid]["tip_dist"].append(float(dist[i, 0].cpu()))
+            per_cond[eid]["line_dist"].append(float(dist[i, 1].cpu()))
+
         batch_iter.set_postfix(
             loss=f"{loss.item():.3f}",
             coord=f"{parts['loss_coord']:.3f}",
+            rel=f"{parts.get('loss_rel', 0.0):.3f}",
             refresh=False,
         )
 
@@ -217,6 +274,9 @@ def evaluate(
     out["loss"] = loss_sum / max(n, 1)
     out["loss_hm"] = loss_hm_sum / max(n, 1)
     out["loss_coord"] = loss_coord_sum / max(n, 1)
+    out["loss_rel"] = loss_rel_sum / max(n, 1)
+    out.update(_aggregate_per_condition_metrics(per_cond))
+    out["bipoles_rmse_mean"] = _bipoles_rmse_mean(per_cond)
     return out
 
 
@@ -243,13 +303,14 @@ def train_one_epoch(
         leave=True,
         disable=not show_progress,
     )
-    for x, hm, _, kps_tgt, _, _ in batch_iter:
+    for x, hm, _, kps_tgt, _, _, tip_weights in batch_iter:
         x = x.to(device)
         hm = hm.to(device)
         kps_tgt = kps_tgt.to(device)
+        tip_weights = tip_weights.to(device)
         optimizer.zero_grad()
         pred = model(x)
-        loss, parts = criterion(pred, hm, kps_tgt)
+        loss, parts = criterion(pred, hm, kps_tgt, tip_weights)
         loss.backward()
         optimizer.step()
         loss_sum += loss.item() * x.size(0)
@@ -257,6 +318,7 @@ def train_one_epoch(
         batch_iter.set_postfix(
             loss=f"{loss.item():.3f}",
             coord=f"{parts['loss_coord']:.3f}",
+            rel=f"{parts.get('loss_rel', 0.0):.3f}",
             refresh=False,
         )
 
@@ -273,7 +335,12 @@ def run_training(args: Namespace) -> dict:
     print("Training shared model on all conditions")
     print(f"Train: {args.train_pkl}")
     print(f"Val:   {args.val_pkl}")
+    print(f"Backbone: frozen (unfreeze disabled)")
+    print(f"Occluded tip weight (BiPoles): {getattr(args, 'occluded_tip_weight', 0.25)}")
+    print(f"Early stopping: patience={args.patience} on bipoles_rmse_mean")
     print(f"{'='*60}")
+
+    occluded_tip_weight = getattr(args, "occluded_tip_weight", 0.25)
 
     train_geom = get_geom_train_transforms(args.img_h, args.img_w)
     val_geom = get_geom_val_transforms(args.img_h, args.img_w)
@@ -286,6 +353,7 @@ def run_training(args: Namespace) -> dict:
         require_consecutive_frames=not args.no_require_consecutive,
         img_h=args.img_h,
         img_w=args.img_w,
+        occluded_tip_weight=occluded_tip_weight,
     )
     val_ds = JawKeypointSequenceDataset(
         args.val_pkl,
@@ -295,6 +363,7 @@ def run_training(args: Namespace) -> dict:
         require_consecutive_frames=not args.no_require_consecutive,
         img_h=args.img_h,
         img_w=args.img_w,
+        occluded_tip_weight=occluded_tip_weight,
     )
 
     train_sampler, train_loader, val_loader = make_train_val_loaders(
@@ -321,6 +390,8 @@ def run_training(args: Namespace) -> dict:
 
     criterion = JawKeypointLoss(
         coord_weight=args.coord_weight,
+        tip_coord_weight=getattr(args, "tip_coord_weight", 2.0),
+        relative_offset_weight=getattr(args, "relative_offset_weight", 0.5),
         coord_scale=(args.img_w + args.img_h) / 2.0,
     )
     optimizer = torch.optim.AdamW(
@@ -329,7 +400,7 @@ def run_training(args: Namespace) -> dict:
         weight_decay=args.weight_decay,
     )
 
-    best_val_rmse = float("inf")
+    best_bipoles_rmse = float("inf")
     best_state = None
     patience_counter = 0
     history: dict[str, list[float]] = {
@@ -337,6 +408,7 @@ def run_training(args: Namespace) -> dict:
         "val_loss": [],
         "val_pck_mean": [],
         "val_rmse_mean": [],
+        "bipoles_rmse_mean": [],
     }
 
     show_progress = getattr(args, "show_progress", True)
@@ -395,9 +467,11 @@ def run_training(args: Namespace) -> dict:
         history["val_loss"].append(val_m["loss"])
         history["val_pck_mean"].append(val_m["pck_mean"])
         history["val_rmse_mean"].append(val_m["rmse_mean"])
+        history["bipoles_rmse_mean"].append(val_m["bipoles_rmse_mean"])
 
-        if val_m["rmse_mean"] < best_val_rmse - 1e-6:
-            best_val_rmse = val_m["rmse_mean"]
+        bipoles_rmse = val_m["bipoles_rmse_mean"]
+        if bipoles_rmse < best_bipoles_rmse - 1e-6:
+            best_bipoles_rmse = bipoles_rmse
             best_state = copy.deepcopy(model.state_dict())
             patience_counter = 0
             ckpt_path = os.path.join(args.out_dir, "best_model.pt")
@@ -410,25 +484,26 @@ def run_training(args: Namespace) -> dict:
                 },
                 ckpt_path,
             )
-            summary = (
-                f"Epoch {epoch_no}/{args.epochs}  train_loss={tr_loss:.4f}  "
-                f"val_loss={val_m['loss']:.4f}  val_coord={val_m['loss_coord']:.4f}  "
-                f"val_rmse={val_m['rmse_mean']:.1f}px  "
-                f"best_rmse={best_val_rmse:.1f}px  *saved*"
-            )
+            saved = "  *saved*"
         else:
             patience_counter += 1
-            summary = (
-                f"Epoch {epoch_no}/{args.epochs}  train_loss={tr_loss:.4f}  "
-                f"val_loss={val_m['loss']:.4f}  val_coord={val_m['loss_coord']:.4f}  "
-                f"val_rmse={val_m['rmse_mean']:.1f}px  "
-                f"best_rmse={best_val_rmse:.1f}px"
-            )
-            if patience_counter >= args.patience:
-                if show_progress:
-                    tqdm.write(summary)
-                    tqdm.write("Early stopping.")
-                break
+            saved = ""
+
+        cond_rmse = "  ".join(
+            f"{c}={val_m.get(f'{c}_rmse_tip', float('nan')):.1f}"
+            for c in CONDITIONS
+            if f"{c}_rmse_tip" in val_m
+        )
+        summary = (
+            f"Epoch {epoch_no}/{args.epochs}  train_loss={tr_loss:.4f}  "
+            f"bipoles_rmse={bipoles_rmse:.1f}px  best={best_bipoles_rmse:.1f}px{saved}  "
+            f"global_rmse={val_m['rmse_mean']:.1f}px  [{cond_rmse}]"
+        )
+        if patience_counter >= args.patience and saved == "":
+            if show_progress:
+                tqdm.write(summary)
+                tqdm.write("Early stopping.")
+            break
 
         if show_progress:
             tqdm.write(summary)
@@ -443,7 +518,7 @@ def run_training(args: Namespace) -> dict:
     return {
         "model": model,
         "history": history,
-        "best_val_rmse": best_val_rmse,
+        "best_bipoles_rmse": best_bipoles_rmse,
         "out_dir": args.out_dir,
         "device": device,
         "config": args,
@@ -474,6 +549,9 @@ def args_from_cli(cli: argparse.Namespace) -> Namespace:
         unfreeze_backbone_epoch=cli.unfreeze_backbone_epoch,
         batch_size_unfrozen=cli.batch_size_unfrozen,
         coord_weight=cli.coord_weight,
+        tip_coord_weight=cli.tip_coord_weight,
+        occluded_tip_weight=cli.occluded_tip_weight,
+        relative_offset_weight=cli.relative_offset_weight,
         patience=cli.patience,
         seed=cli.seed,
     )

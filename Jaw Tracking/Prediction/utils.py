@@ -15,6 +15,7 @@ import torch
 import torch.nn as nn
 from albumentations.pytorch import ToTensorV2
 import albumentations as A
+from scipy.signal import savgol_filter
 from tqdm import tqdm
 
 _TRAIN = Path(__file__).resolve().parent.parent / "Training"
@@ -148,6 +149,44 @@ def load_images_from_dir(
     return frames_arr, fn_arr
 
 
+def smooth_tip_trajectory(
+    tip_x: np.ndarray,
+    tip_y: np.ndarray,
+    *,
+    window: int = 7,
+    polyorder: int = 2,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Savitzky–Golay smooth tip coords; leaves short sequences unchanged."""
+    n = len(tip_x)
+    if n < window:
+        return tip_x.copy(), tip_y.copy()
+    if window % 2 == 0:
+        window += 1
+    return (
+        savgol_filter(tip_x, window_length=window, polyorder=polyorder),
+        savgol_filter(tip_y, window_length=window, polyorder=polyorder),
+    )
+
+
+def apply_tip_smoothing_to_df(
+    df: pd.DataFrame,
+    *,
+    smooth_tip_trajectory_enabled: bool = True,
+    smooth_window: int = 7,
+) -> pd.DataFrame:
+    if not smooth_tip_trajectory_enabled:
+        return df
+    out = df.copy()
+    tip_x, tip_y = smooth_tip_trajectory(
+        out["tip_x"].to_numpy(dtype=np.float64),
+        out["tip_y"].to_numpy(dtype=np.float64),
+        window=smooth_window,
+    )
+    out["tip_x"] = tip_x.astype(np.float32)
+    out["tip_y"] = tip_y.astype(np.float32)
+    return out
+
+
 def write_dataset_keypoint_csvs(
     df: pd.DataFrame,
     output_dir: str | Path,
@@ -232,6 +271,8 @@ def sliding_window_keypoint_inference(
     img_h: int = 240,
     orig_w: int = DEFAULT_ORIG_W,
     orig_h: int = DEFAULT_ORIG_H,
+    smooth_tip_trajectory_enabled: bool = True,
+    smooth_window: int = 7,
 ) -> pd.DataFrame:
     model.eval()
     n = len(frames_rgb)
@@ -267,7 +308,7 @@ def sliding_window_keypoint_inference(
             lines=lines,
         )
 
-    return pd.DataFrame(
+    df = pd.DataFrame(
         {
             "frame": np.arange(n, dtype=np.int64),
             "tip_x": tips[:, 0],
@@ -275,6 +316,11 @@ def sliding_window_keypoint_inference(
             "line_x": lines[:, 0],
             "line_y": lines[:, 1],
         }
+    )
+    return apply_tip_smoothing_to_df(
+        df,
+        smooth_tip_trajectory_enabled=smooth_tip_trajectory_enabled,
+        smooth_window=smooth_window,
     )
 
 
@@ -293,6 +339,8 @@ def sliding_window_keypoint_inference_from_video(
     center_chunk: int = 512,
     orig_w: int = DEFAULT_ORIG_W,
     orig_h: int = DEFAULT_ORIG_H,
+    smooth_tip_trajectory_enabled: bool = True,
+    smooth_window: int = 7,
 ) -> pd.DataFrame:
     """Stream a long video in chunks to avoid loading all frames into RAM."""
     model.eval()
@@ -337,7 +385,7 @@ def sliding_window_keypoint_inference_from_video(
             lines=lines,
         )
 
-    return pd.DataFrame(
+    df = pd.DataFrame(
         {
             "frame": np.arange(n, dtype=np.int64),
             "tip_x": tips[:, 0],
@@ -345,6 +393,11 @@ def sliding_window_keypoint_inference_from_video(
             "line_x": lines[:, 0],
             "line_y": lines[:, 1],
         }
+    )
+    return apply_tip_smoothing_to_df(
+        df,
+        smooth_tip_trajectory_enabled=smooth_tip_trajectory_enabled,
+        smooth_window=smooth_window,
     )
 
 
@@ -370,6 +423,8 @@ def run_inference_on_video(
     device: str | None = None,
     batch_size: int = 8,
     center_chunk: int = 512,
+    smooth_tip_trajectory_enabled: bool = True,
+    smooth_window: int = 7,
 ) -> tuple[pd.DataFrame, Path, Path]:
     """
     Run inference on a video and save dataset-style CSVs.
@@ -405,6 +460,8 @@ def run_inference_on_video(
         center_chunk=center_chunk,
         orig_w=orig_w,
         orig_h=orig_h,
+        smooth_tip_trajectory_enabled=smooth_tip_trajectory_enabled,
+        smooth_window=smooth_window,
     )
     tip_path, base_path = write_dataset_keypoint_csvs(df, output_dir)
     return df, tip_path, base_path
@@ -418,6 +475,8 @@ def run_inference_on_image_dir(
     checkpoints_root: str | Path = "../Training/checkpoints",
     device: str | None = None,
     batch_size: int = 8,
+    smooth_tip_trajectory_enabled: bool = True,
+    smooth_window: int = 7,
 ) -> tuple[pd.DataFrame, Path, Path]:
     """
     Run inference on a folder of PNG frames.
@@ -446,6 +505,8 @@ def run_inference_on_image_dir(
         img_h=img_h,
         orig_w=orig_w,
         orig_h=orig_h,
+        smooth_tip_trajectory_enabled=smooth_tip_trajectory_enabled,
+        smooth_window=smooth_window,
     )
     df["frame"] = frame_numbers
     df = df[["frame", "tip_x", "tip_y", "line_x", "line_y"]]

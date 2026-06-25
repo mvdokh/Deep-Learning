@@ -24,7 +24,20 @@ from torch.utils.data import Dataset
 EdgeMode = Literal["pad", "skip"]
 
 ORIG_W, ORIG_H = 640, 480
-KEYPOINT_SIGMA_DIAMETER_PX = 10.0
+KEYPOINT_SIGMA_DIAMETER_PX = 8.0
+
+# experiment_id: 0=IRt_BiPoles, 1=IRt_TeLC, 2=PCRt_BiPoles
+TELC_EXPERIMENT_ID = 1
+BIPOLES_EXPERIMENT_IDS = frozenset({0, 2})
+
+
+def tip_supervision_weight_for_experiment(
+    experiment_id: int,
+    *,
+    occluded_tip_weight: float = 0.25,
+) -> float:
+    """Full tip supervision on visible TeLC; down-weight inferred BiPoles tips."""
+    return 1.0 if int(experiment_id) == TELC_EXPERIMENT_ID else occluded_tip_weight
 
 
 def get_img_size_hw(img_h: int = 240, img_w: int = 320) -> tuple[int, int]:
@@ -37,12 +50,13 @@ def get_geom_train_transforms(img_h: int = 240, img_w: int = 320) -> A.ReplayCom
 
     Geometric ops update keypoints; image-only ops below are replayed across
     all 8 frames without moving labels (blur, noise, dust specks).
+
+    Horizontal flip is disabled — side-view jaws always face the same direction.
     """
     return A.ReplayCompose(
         [
             A.Resize(height=img_h, width=img_w),
             A.Rotate(limit=15, p=0.5),
-            A.HorizontalFlip(p=0.5),
             A.RandomBrightnessContrast(
                 brightness_limit=0.1, contrast_limit=0.1, p=0.2
             ),
@@ -139,7 +153,7 @@ def keypoints_to_heatmaps(
     """
     Build (2, H, W) heatmaps for tip and line.
 
-  ``sigma`` scales with resize so the Gaussian diameter stays ~10 px in original space.
+  ``sigma`` scales with resize so the Gaussian diameter stays ~8 px in original space.
 
     Parameters
     ----------
@@ -234,8 +248,9 @@ def apply_val_to_sequence_with_keypoints(
 
 class JawKeypointSequenceDataset(Dataset):
     """
-    Each item: sequence (T,C,H,W), heatmaps (2,H,W), keypoints_orig (2,2), experiment_id.
-  """
+    Each item: sequence (T,C,H,W), heatmaps (2,H,W), keypoints_orig (2,2),
+    keypoints_target (2,2), experiment_id, frame_num, tip_supervision_weight.
+    """
 
     def __init__(
         self,
@@ -247,6 +262,7 @@ class JawKeypointSequenceDataset(Dataset):
         require_consecutive_frames: bool = True,
         img_h: int = 240,
         img_w: int = 320,
+        occluded_tip_weight: float = 0.25,
     ) -> None:
         with open(pkl_path, "rb") as f:
             data = pickle.load(f)
@@ -270,6 +286,7 @@ class JawKeypointSequenceDataset(Dataset):
         self.center_index = (window_size - 1) // 2
         self.img_h = img_h
         self.img_w = img_w
+        self.occluded_tip_weight = occluded_tip_weight
 
         self._centers: list[int] = []
         self._build_index()
@@ -372,4 +389,10 @@ class JawKeypointSequenceDataset(Dataset):
         hm = torch.from_numpy(heatmaps)
         exp_id = torch.tensor(int(vid), dtype=torch.long)
         frame_num = torch.tensor(int(self.frame_numbers[center_flat]), dtype=torch.long)
-        return x, hm, keypoints_orig, keypoints_target, exp_id, frame_num
+        tip_weight = torch.tensor(
+            tip_supervision_weight_for_experiment(
+                vid, occluded_tip_weight=self.occluded_tip_weight
+            ),
+            dtype=torch.float32,
+        )
+        return x, hm, keypoints_orig, keypoints_target, exp_id, frame_num, tip_weight

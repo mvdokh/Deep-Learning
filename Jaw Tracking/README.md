@@ -45,30 +45,34 @@ cd ../Training
 
 ## Model & training
 
-EfficientNet-B2 backbone + 8-frame temporal conv + FiLM + 2-channel heatmap decoder (~15M params). Input 320×240; targets are 10 px Gaussian heatmaps.
+EfficientNet-B2 backbone + 8-frame temporal conv + FiLM + 2-channel heatmap decoder (~15M params). Input 320×240; targets are 8 px Gaussian heatmaps (~4 px on heatmap grid).
 
 | Setting | Default |
 |---------|---------|
 | Window | 8 frames |
 | Batch size | 32 (notebook) / 8 (CLI) |
 | Optimizer | AdamW, lr=1e-3 |
-| Loss | focal heatmap + λ× coordinate (smooth L1, λ=1) |
-| Backbone | frozen → unfreeze epoch 15 (lr×0.1) |
-| Checkpoint | best `val_rmse_mean`; early stop patience 15 |
+| Loss | focal heatmap + coordinate + relative tip−base offset |
+| Tip supervision | TeLC=1.0, BiPoles occluded tip=0.25 |
+| Backbone | frozen (ImageNet EfficientNet-B2) |
+| Early stop | patience 15 on **BiPoles** `val_rmse_mean` |
+| Checkpoint | best BiPoles `val_rmse_mean` |
 
-Coordinate loss decodes predictions via soft-argmax and directly optimizes location — fixes the old problem where heatmap MSE looked tiny while RMSE stayed ~120–180 px.
+**Occlusion strategy:** IRt_TeLC has visible jaw tips (full supervision). IRt_BiPoles and PCRt_BiPoles tips are tongue-occluded/inferred — tip heatmap and coordinate losses are down-weighted; relative tip−base offset loss and base supervision stay full weight. No dataset rebuild required (`experiment_id` drives weights).
 
 **Sampler:** `ExperimentGroupedBatchSampler` — never mixes conditions in a batch.
 
-**Metrics:** RMSE and PCK@10px in original 640×480 space.
+**Metrics:** RMSE and PCK@10px in original 640×480 space, logged per condition each epoch.
 
-**Augmentations:** resize, ±15° rotation, flip, brightness/contrast, light blur/noise/dust/motion blur (`ReplayCompose` across all 8 frames).
+**Augmentations:** resize, ±15° rotation, brightness/contrast, light blur/noise/dust/motion blur (no horizontal flip).
+
+Diagnostics: `python analyze_keypoint_stats.py --pkl ../data/train.pkl`
 
 Debug augmentations: [`Training/visualize_augmentations.ipynb`](Training/visualize_augmentations.ipynb)
 
 ## Prediction
 
-Open [`Prediction/predict.ipynb`](Prediction/predict.ipynb). Loads `../Training/checkpoints/best_model.pt`. Supports `.mp4` or image folders. Coords scaled to actual video dimensions.
+Open [`Prediction/predict.ipynb`](Prediction/predict.ipynb). Loads `../Training/checkpoints/best_model.pt`. Supports `.mp4` or image folders. Coords scaled to actual video dimensions. Tip trajectory Savitzky–Golay smoothing on by default (`smooth_tip_trajectory=True`).
 
 ## Data pickles (`data/`)
 
