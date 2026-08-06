@@ -1,0 +1,26 @@
+Running on host: node4304
+Start time: Mon Mar 30 11:02:21 EDT 2026
+SLURM job ID: 11181137
+PyTorch 2.10.0+cu128
+CUDA available: True
+GPU: NVIDIA L40S
+Device: cuda
+Checkpoint: /orcd/home/002/mvdokh/Deep-Learning/Contact Classification/Training/checkpoints/contact_classifier.pt
+Output dir: /home/mvdokh/data/b064_0913_1/
+Loaded checkpoint from: /orcd/home/002/mvdokh/Deep-Learning/Contact Classification/Training/checkpoints/contact_classifier.pt
+  Config: {'img_size': 256, 'batch_size': 32, 'learning_rate': 0.0001, 'weight_decay': 0.0001, 'freeze_backbone': False, 'model_arch': 'efficientnet_b3'}
+  Epoch: 13
+  Val loss: 0.0013
+VideoFrameDataset: frames 117750–378249 (260,500 frames)
+Total frames to process: 260,500
+Batches: 4,071
+
+Total frames   : 260,500
+Contact frames : 109,174 (41.9%)
+No contact     : 151,326 (58.1%)
+
+Saved per-frame predictions → /home/mvdokh/data/b064_0913_1/per_frame_predictions.csv
+Saved contact intervals     → /home/mvdokh/data/b064_0913_1/contact_intervals.csv
+
+Found 6213 contact intervals
+
